@@ -49,6 +49,9 @@ release: (build "release")
 install: (build "release")
     sudo meson install -C build-release
 
+uninstall:
+    sudo ninja -C build-release uninstall
+
 format:
     find src \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
     find src \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 grep -ZlP '\s+$' | xargs -0 -r sed -i 's/[[:space:]]*$//'
