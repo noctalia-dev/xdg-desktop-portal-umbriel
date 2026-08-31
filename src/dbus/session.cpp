@@ -424,6 +424,7 @@ namespace xdpu {
         entry.emplace("output", sdbus::Variant{selection.output});
       } else {
         entry.emplace("app_id", sdbus::Variant{selection.appId});
+        entry.emplace("identifier", sdbus::Variant{selection.identifier});
       }
       entries.push_back(std::move(entry));
     }

@@ -95,13 +95,6 @@ namespace xdpu {
       return it == toplevels.end() ? nullptr : &*it;
     }
 
-    const ToplevelInfo* findToplevelByAppId(const WaylandContext& wayland, const std::string& appId) {
-      const auto& toplevels = wayland.toplevels();
-      const auto it =
-          std::ranges::find_if(toplevels, [&](const ToplevelInfo& toplevel) { return toplevel.appId == appId; });
-      return it == toplevels.end() ? nullptr : &*it;
-    }
-
     Session::Selection selectionForOutput(const OutputInfo& output) {
       Session::Selection selection;
       selection.kind = Session::SourceKind::Monitor;
@@ -173,6 +166,8 @@ namespace xdpu {
           }
           selection.kind = Session::SourceKind::Window;
           selection.appId = *appId;
+          // Entries predating this key have no identifier, so they cannot match and fall through to the chooser.
+          selection.identifier = dictString(entry, "identifier").value_or(std::string{});
         } else {
           continue;
         }
@@ -190,7 +185,7 @@ namespace xdpu {
           if (const OutputInfo* output = findOutput(wayland, stored.output)) {
             matches.push_back(selectionForOutput(*output));
           }
-        } else if (const ToplevelInfo* toplevel = findToplevelByAppId(wayland, stored.appId)) {
+        } else if (const ToplevelInfo* toplevel = findToplevelByIdentifier(wayland, stored.identifier)) {
           matches.push_back(selectionForToplevel(*toplevel));
         }
 
@@ -305,6 +300,7 @@ namespace xdpu {
         entry["title"] = selection.title;
         if (selection.kind == Session::SourceKind::Window) {
           entry["app_id"] = selection.appId;
+          entry["identifier"] = selection.identifier;
         } else {
           entry["output"] = selection.output;
         }
