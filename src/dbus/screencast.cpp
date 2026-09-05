@@ -116,6 +116,30 @@ namespace xdpu {
       return selection;
     }
 
+    std::optional<Session::Selection> parseWindowEntry(const PortalResults& entry, RestoreDataVersion version) {
+      switch (version) {
+      case RestoreDataVersion::AppIdOnly:
+        // An intermediate build wrote identifiers into records still labelled AppIdOnly, so one
+        // may be present; it predates the guarantee, so prompt rather than trust it.
+        return std::nullopt;
+
+      case RestoreDataVersion::Identifier: {
+        // The protocol guarantees a nonempty identifier, not a nonempty app_id.
+        const auto identifier = dictString(entry, "identifier");
+        if (!identifier || identifier->empty()) {
+          return std::nullopt;
+        }
+        Session::Selection selection;
+        selection.kind = Session::SourceKind::Window;
+        selection.identifier = *identifier;
+        selection.appId = dictString(entry, "app_id").value_or(std::string{});
+        selection.title = dictString(entry, "title").value_or(std::string{});
+        return selection;
+      }
+      }
+      return std::nullopt;
+    }
+
     std::vector<Session::Selection> parseRestoreData(const PortalResults& options) {
       const auto it = options.find("restore_data");
       if (it == options.end() || !it->second.containsValueOfType<RestoreTuple>()) {
@@ -129,7 +153,8 @@ namespace xdpu {
         return {};
       }
 
-      if (std::get<0>(restore) != "umbriel" || std::get<1>(restore) != 1) {
+      const auto version = restoreDataVersionFromWire(std::get<1>(restore));
+      if (std::get<0>(restore) != "umbriel" || !version) {
         return {};
       }
 
@@ -160,14 +185,11 @@ namespace xdpu {
           selection.kind = Session::SourceKind::Monitor;
           selection.output = *output;
         } else if (*kind == "window") {
-          const auto appId = dictString(entry, "app_id");
-          if (!appId || appId->empty()) {
+          const auto window = parseWindowEntry(entry, *version);
+          if (!window) {
             continue;
           }
-          selection.kind = Session::SourceKind::Window;
-          selection.appId = *appId;
-          // Entries predating this key have no identifier, so they cannot match and fall through to the chooser.
-          selection.identifier = dictString(entry, "identifier").value_or(std::string{});
+          selection = *window;
         } else {
           continue;
         }

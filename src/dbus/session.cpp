@@ -423,15 +423,15 @@ namespace xdpu {
       if (selection.kind == SourceKind::Monitor) {
         entry.emplace("output", sdbus::Variant{selection.output});
       } else {
-        entry.emplace("app_id", sdbus::Variant{selection.appId});
         entry.emplace("identifier", sdbus::Variant{selection.identifier});
+        entry.emplace("app_id", sdbus::Variant{selection.appId});
       }
       entries.push_back(std::move(entry));
     }
 
-    return sdbus::Variant{
-        sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"umbriel", uint32_t{1}, sdbus::Variant{entries}}
-    };
+    return sdbus::Variant{sdbus::Struct<std::string, uint32_t, sdbus::Variant>{
+        "umbriel", static_cast<uint32_t>(kRestoreDataVersion), sdbus::Variant{entries}
+    }};
   }
 
   void Session::clearStreams() { m_impl->clearStreams(); }
