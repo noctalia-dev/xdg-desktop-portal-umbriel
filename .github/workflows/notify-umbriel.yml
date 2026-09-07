@@ -1,0 +1,24 @@
+name: Notify Umbriel
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: ${{ github.repository == 'noctalia-dev/xdg-desktop-portal-umbriel' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch Umbriel portal input update
+        env:
+          GH_TOKEN: ${{ secrets.UMBRIEL_DISPATCH_TOKEN }}
+        run: |
+          gh api \
+            --method POST \
+            repos/noctalia-dev/umbriel/dispatches \
+            -f event_type=xdg-desktop-portal-umbriel-updated \
+            -f "client_payload[source_repository]=$GITHUB_REPOSITORY" \
+            -f "client_payload[source_ref]=$GITHUB_REF" \
+            -f "client_payload[source_revision]=$GITHUB_SHA"
