@@ -1,3 +1,5 @@
+#include "picker/previews.h"
+
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -49,6 +51,15 @@ namespace {
     bool operator==(const Palette&) const = default;
   };
 
+  // Card preview slot, in logical pixels; thumbnails are scaled to fit it.
+  constexpr int kPreviewWidth = 210;
+  constexpr int kPreviewHeight = 132;
+
+  struct PreviewCard {
+    xdpu::PreviewSource source;
+    GtkWidget* stack = nullptr;
+  };
+
   struct AppState {
     bool multiple = false;
     bool showMonitors = false;
@@ -62,6 +73,9 @@ namespace {
     GtkWidget* outputList = nullptr;
     GtkWidget* windowList = nullptr;
     GtkWidget* shareButton = nullptr;
+    GtkWidget* selectionLabel = nullptr;
+    std::vector<PreviewCard> previewCards;
+    std::unique_ptr<xdpu::Previews> previews;
     GtkCssProvider* paletteProvider = nullptr;
     GdkDisplay* display = nullptr;
     int paletteFd = -1;
@@ -405,6 +419,14 @@ namespace {
       return;
     }
     state.responding = true;
+    if (state.previews) {
+      state.previews->stop();
+    }
+    // Unmap before waiting for preview cleanup so the compositor can return focus.
+    if (state.window != nullptr) {
+      gtk_widget_set_visible(state.window, FALSE);
+      gdk_display_flush(state.display);
+    }
     printResponse(response);
     if (state.app != nullptr) {
       g_application_quit(G_APPLICATION(state.app));
@@ -417,7 +439,7 @@ namespace {
     if (list == nullptr) {
       return nullptr;
     }
-    return gtk_list_box_get_selected_rows(GTK_LIST_BOX(list));
+    return gtk_flow_box_get_selected_children(GTK_FLOW_BOX(list));
   }
 
   bool hasSelection(GtkWidget* list) {
@@ -431,30 +453,35 @@ namespace {
     if (state.shareButton == nullptr) {
       return;
     }
-    gtk_widget_set_sensitive(state.shareButton, hasSelection(state.outputList) || hasSelection(state.windowList));
+    GList* screens = selectedRows(state.outputList);
+    GList* windows = selectedRows(state.windowList);
+    const guint count = g_list_length(screens) + g_list_length(windows);
+    g_list_free(screens);
+    g_list_free(windows);
+    gtk_widget_set_sensitive(state.shareButton, count > 0);
+    if (state.selectionLabel != nullptr) {
+      const std::string text = count == 0
+          ? "Nothing selected"
+          : std::to_string(count) + (count == 1 ? " source selected" : " sources selected");
+      gtk_label_set_text(GTK_LABEL(state.selectionLabel), text.c_str());
+    }
   }
 
   void unselectList(GtkWidget* list) {
     if (list != nullptr) {
-      gtk_list_box_unselect_all(GTK_LIST_BOX(list));
+      gtk_flow_box_unselect_all(GTK_FLOW_BOX(list));
     }
   }
 
-  void onSelectedRowsChanged(GtkListBox* list, gpointer userData) {
+  void onSelectedRowsChanged(GtkFlowBox* list, gpointer userData) {
     auto* state = static_cast<AppState*>(userData);
     if (state->updatingSelection) {
-      updateShareButton(*state);
       return;
     }
 
     if (!state->multiple && hasSelection(GTK_WIDGET(list))) {
       state->updatingSelection = true;
-      if (GTK_WIDGET(list) != state->outputList) {
-        unselectList(state->outputList);
-      }
-      if (GTK_WIDGET(list) != state->windowList) {
-        unselectList(state->windowList);
-      }
+      unselectList(GTK_WIDGET(list) == state->outputList ? state->windowList : state->outputList);
       state->updatingSelection = false;
     }
 
@@ -486,84 +513,217 @@ namespace {
     return label;
   }
 
-  GtkWidget* makeOutputRow(const OutputItem& output, guint index) {
-    GtkWidget* row = gtk_list_box_row_new();
-    g_object_set_data(G_OBJECT(row), "xdpu-kind", GINT_TO_POINTER(static_cast<int>(RowKind::Monitor)));
-    g_object_set_data(G_OBJECT(row), "xdpu-index", GUINT_TO_POINTER(index));
+  // A thumbnail is wider than the card, so the preview rides in a non-measured
+  // overlay: the empty slot below it, not the captured texture, fixes the card size.
+  GtkWidget* makePreview(AppState& state, RowKind kind, const std::string& identifier) {
+    GtkWidget* frame = gtk_overlay_new();
+    GtkWidget* slot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(slot, kPreviewWidth, kPreviewHeight);
+    gtk_overlay_set_child(GTK_OVERLAY(frame), slot);
 
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_widget_set_margin_top(box, 10);
-    gtk_widget_set_margin_bottom(box, 10);
-    gtk_widget_set_margin_start(box, 12);
-    gtk_widget_set_margin_end(box, 12);
+    GtkWidget* stack = gtk_stack_new();
+    gtk_widget_add_css_class(stack, "preview");
+    gtk_widget_set_overflow(stack, GTK_OVERFLOW_HIDDEN);
+    GtkWidget* fallback = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_valign(fallback, GTK_ALIGN_CENTER);
+    GtkWidget* icon = gtk_image_new_from_icon_name(
+        kind == RowKind::Monitor ? "video-display-symbolic" : "application-x-executable-symbolic"
+    );
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
+    gtk_box_append(GTK_BOX(fallback), icon);
+    GtkWidget* label = gtk_label_new("Loading preview…");
+    gtk_widget_add_css_class(label, "preview-caption");
+    gtk_box_append(GTK_BOX(fallback), label);
+    g_object_set_data(G_OBJECT(stack), "preview-label", label);
+    gtk_stack_add_named(GTK_STACK(stack), fallback, "fallback");
+    gtk_overlay_add_overlay(GTK_OVERLAY(frame), stack);
 
-    GtkWidget* textBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-    gtk_widget_set_hexpand(textBox, TRUE);
-    gtk_box_append(GTK_BOX(textBox), makeLabel(displayOrFallback(output.name, "Unnamed screen"), true, false));
-    gtk_box_append(GTK_BOX(textBox), makeLabel(output.description, false, true));
-
-    const std::string detail = std::to_string(output.width) + "×" + std::to_string(output.height);
-    GtkWidget* detailLabel = makeLabel(detail, false, true);
-    gtk_label_set_xalign(GTK_LABEL(detailLabel), 1.0F);
-
-    gtk_box_append(GTK_BOX(box), textBox);
-    gtk_box_append(GTK_BOX(box), detailLabel);
-    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
-    return row;
+    state.previewCards.push_back({{kind == RowKind::Monitor, identifier}, stack});
+    return frame;
   }
 
-  GtkWidget* makeWindowRow(const WindowItem& window, guint index) {
-    GtkWidget* row = gtk_list_box_row_new();
-    g_object_set_data(G_OBJECT(row), "xdpu-kind", GINT_TO_POINTER(static_cast<int>(RowKind::Window)));
+  void toggleSource(GtkFlowBoxChild* child) {
+    auto* grid = GTK_FLOW_BOX(gtk_widget_get_parent(GTK_WIDGET(child)));
+    const bool selected = gtk_flow_box_child_is_selected(child);
+    gtk_widget_grab_focus(GTK_WIDGET(child));
+    if (selected) {
+      gtk_flow_box_unselect_child(grid, child);
+    } else {
+      gtk_flow_box_select_child(grid, child);
+    }
+  }
+
+  GtkWidget* makeCard(
+      AppState& state, RowKind kind, guint index, const std::string& identifier, const std::string& title,
+      const std::string& subtitle, const std::string& detail
+  ) {
+    GtkWidget* row = gtk_flow_box_child_new();
+    gtk_widget_add_css_class(row, "source-card");
+    g_object_set_data(G_OBJECT(row), "xdpu-kind", GINT_TO_POINTER(static_cast<int>(kind)));
     g_object_set_data(G_OBJECT(row), "xdpu-index", GUINT_TO_POINTER(index));
+    gtk_widget_set_tooltip_text(row, (title + "\n" + subtitle).c_str());
 
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-    gtk_widget_set_margin_top(box, 10);
-    gtk_widget_set_margin_bottom(box, 10);
-    gtk_widget_set_margin_start(box, 12);
-    gtk_widget_set_margin_end(box, 12);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget* overlay = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(overlay), makePreview(state, kind, identifier));
+    GtkWidget* check = gtk_image_new_from_icon_name("object-select-symbolic");
+    gtk_widget_add_css_class(check, "selection-check");
+    gtk_widget_set_halign(check, GTK_ALIGN_END);
+    gtk_widget_set_valign(check, GTK_ALIGN_START);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), check);
+    gtk_box_append(GTK_BOX(box), overlay);
 
-    gtk_box_append(GTK_BOX(box), makeLabel(displayOrFallback(window.title, "Untitled window"), false, false));
-    gtk_box_append(GTK_BOX(box), makeLabel(window.appId, false, true));
-
-    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+    GtkWidget* labels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_add_css_class(labels, "card-labels");
+    GtkWidget* titleLabel = makeLabel(title, true, false);
+    GtkWidget* subtitleLabel = makeLabel(subtitle, false, true);
+    gtk_label_set_max_width_chars(GTK_LABEL(titleLabel), 20);
+    gtk_label_set_max_width_chars(GTK_LABEL(subtitleLabel), 20);
+    gtk_box_append(GTK_BOX(labels), titleLabel);
+    gtk_box_append(GTK_BOX(labels), subtitleLabel);
+    if (!detail.empty()) {
+      GtkWidget* detailLabel = makeLabel(detail, false, true);
+      gtk_widget_add_css_class(detailLabel, "source-detail");
+      gtk_box_append(GTK_BOX(labels), detailLabel);
+    }
+    gtk_box_append(GTK_BOX(box), labels);
+    gtk_flow_box_child_set_child(GTK_FLOW_BOX_CHILD(row), box);
+    if (state.multiple) {
+      GtkGesture* click = gtk_gesture_click_new();
+      gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), GDK_BUTTON_PRIMARY);
+      gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click), GTK_PHASE_CAPTURE);
+      g_signal_connect(
+          click, "pressed", G_CALLBACK(+[](GtkGestureClick* gesture, int, double, double, gpointer data) {
+            gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+            toggleSource(GTK_FLOW_BOX_CHILD(data));
+          }),
+          row
+      );
+      gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(click));
+    }
     return row;
   }
 
   GtkWidget* makePlaceholder(const char* text) {
     GtkWidget* label = gtk_label_new(text);
-    gtk_widget_set_margin_top(label, 24);
-    gtk_widget_set_margin_bottom(label, 24);
+    gtk_widget_set_margin_top(label, 48);
+    gtk_widget_set_margin_bottom(label, 48);
     gtk_widget_add_css_class(label, "dim-label");
     return label;
   }
 
-  GtkWidget* makeListBox(AppState& state, RowKind kind) {
-    GtkWidget* list = gtk_list_box_new();
-    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), state.multiple ? GTK_SELECTION_MULTIPLE : GTK_SELECTION_SINGLE);
-    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(list), TRUE);
-    g_signal_connect(list, "selected-rows-changed", G_CALLBACK(onSelectedRowsChanged), &state);
+  GtkWidget* makeSourceGrid(AppState& state, RowKind kind) {
+    GtkWidget* list = gtk_flow_box_new();
+    gtk_widget_add_css_class(list, "source-grid");
+    gtk_widget_set_valign(list, GTK_ALIGN_START);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(list), TRUE);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(list), 1);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(list), 3);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(list), 12);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(list), 12);
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(list), state.multiple ? GTK_SELECTION_MULTIPLE : GTK_SELECTION_SINGLE);
+    gtk_flow_box_set_activate_on_single_click(GTK_FLOW_BOX(list), TRUE);
+    g_signal_connect(list, "selected-children-changed", G_CALLBACK(onSelectedRowsChanged), &state);
 
     if (kind == RowKind::Monitor) {
-      gtk_list_box_set_placeholder(GTK_LIST_BOX(list), makePlaceholder("No screens available"));
       for (size_t i = 0; i < state.outputs.size(); ++i) {
-        gtk_list_box_append(GTK_LIST_BOX(list), makeOutputRow(state.outputs[i], static_cast<guint>(i)));
+        const auto& output = state.outputs[i];
+        const std::string detail = output.width > 0 && output.height > 0
+            ? std::to_string(output.width) + " × " + std::to_string(output.height)
+            : "";
+        gtk_flow_box_insert(
+            GTK_FLOW_BOX(list),
+            makeCard(
+                state, kind, static_cast<guint>(i), output.name, displayOrFallback(output.name, "Unnamed screen"),
+                output.description, detail
+            ),
+            -1
+        );
       }
     } else {
-      gtk_list_box_set_placeholder(GTK_LIST_BOX(list), makePlaceholder("No windows available"));
       for (size_t i = 0; i < state.windows.size(); ++i) {
-        gtk_list_box_append(GTK_LIST_BOX(list), makeWindowRow(state.windows[i], static_cast<guint>(i)));
+        const auto& window = state.windows[i];
+        gtk_flow_box_insert(
+            GTK_FLOW_BOX(list),
+            makeCard(
+                state, kind, static_cast<guint>(i), window.identifier,
+                displayOrFallback(window.title, "Untitled window"), displayOrFallback(window.appId, "Application"), ""
+            ),
+            -1
+        );
       }
     }
-
     return list;
   }
 
-  GtkWidget* makeScrolledList(GtkWidget* list) {
+  std::vector<size_t> visiblePreviews(const AppState& state) {
+    std::vector<size_t> indices;
+    for (size_t i = 0; i < state.previewCards.size(); ++i) {
+      GtkWidget* preview = state.previewCards[i].stack;
+      if (!gtk_widget_get_mapped(preview)) {
+        continue;
+      }
+      GtkWidget* scrolled = gtk_widget_get_ancestor(preview, GTK_TYPE_SCROLLED_WINDOW);
+      graphene_rect_t bounds;
+      if (scrolled != nullptr
+          && gtk_widget_compute_bounds(preview, scrolled, &bounds)
+          && bounds.origin.y < gtk_widget_get_height(scrolled)
+          && bounds.origin.y + bounds.size.height > 0) {
+        indices.push_back(i);
+      }
+    }
+    return indices;
+  }
+
+  void requestVisiblePreviews(AppState& state) {
+    if (state.previews) {
+      state.previews->request(visiblePreviews(state));
+    }
+  }
+
+  // Posted from the capture worker; drains every result queued since the last run.
+  gboolean onPreviewResults(gpointer userData) {
+    auto& state = *static_cast<AppState*>(userData);
+    if (!state.previews) {
+      return G_SOURCE_REMOVE;
+    }
+    for (auto& result : state.previews->takeResults()) {
+      GtkWidget* stack = state.previewCards[result.index].stack;
+      if (result.texture != nullptr) {
+        GtkWidget* picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(result.texture));
+        g_object_unref(result.texture);
+        gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
+        gtk_stack_add_named(GTK_STACK(stack), picture, "image");
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), "image");
+      } else {
+        auto* label = GTK_LABEL(g_object_get_data(G_OBJECT(stack), "preview-label"));
+        gtk_label_set_text(label, "Preview unavailable");
+      }
+    }
+    // The worker is idle again: hand it whatever scrolled into view meanwhile.
+    requestVisiblePreviews(state);
+    return G_SOURCE_REMOVE;
+  }
+
+  GtkWidget* makeScrolledGrid(AppState& state, GtkWidget* list, const char* emptyText) {
     GtkWidget* scrolled = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_vexpand(scrolled, TRUE);
+    if (gtk_flow_box_get_child_at_index(GTK_FLOW_BOX(list), 0) == nullptr) {
+      // Parent the empty grid normally so selection queries remain valid.
+      GtkWidget* empty = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+      gtk_widget_set_visible(list, FALSE);
+      gtk_box_append(GTK_BOX(empty), list);
+      gtk_box_append(GTK_BOX(empty), makePlaceholder(emptyText));
+      list = empty;
+    }
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), list);
+    // "changed" covers the first allocation and every resize, "value-changed" scrolling.
+    GtkAdjustment* adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled));
+    const auto onViewportChanged =
+        G_CALLBACK(+[](GtkAdjustment*, gpointer data) { requestVisiblePreviews(*static_cast<AppState*>(data)); });
+    g_signal_connect(adjustment, "changed", onViewportChanged, &state);
+    g_signal_connect(adjustment, "value-changed", onViewportChanged, &state);
     return scrolled;
   }
 
@@ -613,7 +773,17 @@ namespace {
       return TRUE;
     }
 
+    GtkWidget* focus = gtk_window_get_focus(GTK_WINDOW(state->window));
+    if (state->multiple && keyval == GDK_KEY_space && focus != nullptr && GTK_IS_FLOW_BOX_CHILD(focus)) {
+      toggleSource(GTK_FLOW_BOX_CHILD(focus));
+      return TRUE;
+    }
+
     if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
+      // Let focused controls (Cancel and the source tabs) handle their own activation.
+      if (focus != nullptr && GTK_IS_BUTTON(focus)) {
+        return FALSE;
+      }
       if (state->shareButton != nullptr && gtk_widget_get_sensitive(state->shareButton)) {
         share(*state);
       }
@@ -623,16 +793,25 @@ namespace {
     return FALSE;
   }
 
-  GtkWidget* makeContent(AppState& state, GtkWidget* header) {
+  GtkWidget* makeContent(AppState& state) {
     GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget* body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_vexpand(body, TRUE);
+    GtkWidget* heading = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_add_css_class(heading, "picker-heading");
+    GtkWidget* title = makeLabel("Choose what to share", true, false);
+    gtk_widget_add_css_class(title, "picker-title");
+    gtk_box_append(GTK_BOX(heading), title);
+    GtkWidget* description =
+        makeLabel(state.multiple ? "Select one or more sources to share." : "Select a source to share.", false, true);
+    gtk_box_append(GTK_BOX(heading), description);
+    gtk_box_append(GTK_BOX(content), heading);
 
     if (state.showMonitors) {
-      state.outputList = makeListBox(state, RowKind::Monitor);
+      state.outputList = makeSourceGrid(state, RowKind::Monitor);
     }
     if (state.showWindows) {
-      state.windowList = makeListBox(state, RowKind::Window);
+      state.windowList = makeSourceGrid(state, RowKind::Window);
     }
 
     if (state.showMonitors && state.showWindows) {
@@ -641,14 +820,31 @@ namespace {
       gtk_widget_set_vexpand(stack, TRUE);
       gtk_stack_set_transition_type(GTK_STACK(stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
       gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), GTK_STACK(stack));
-      gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), switcher);
-      gtk_stack_add_titled(GTK_STACK(stack), makeScrolledList(state.outputList), "screens", "Screens");
-      gtk_stack_add_titled(GTK_STACK(stack), makeScrolledList(state.windowList), "windows", "Windows");
+      gtk_widget_add_css_class(switcher, "source-tabs");
+      gtk_widget_remove_css_class(switcher, "linked");
+      gtk_widget_set_halign(switcher, GTK_ALIGN_START);
+      gtk_box_append(GTK_BOX(body), switcher);
+      gtk_stack_add_titled(
+          GTK_STACK(stack), makeScrolledGrid(state, state.outputList, "No screens available"), "screens", "Screens"
+      );
+      gtk_stack_add_titled(
+          GTK_STACK(stack), makeScrolledGrid(state, state.windowList, "No windows available"), "windows", "Windows"
+      );
+      // Cards on the newly shown page become eligible for capture.
+      g_signal_connect(
+          stack, "notify::visible-child", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+            requestVisiblePreviews(*static_cast<AppState*>(data));
+          }),
+          &state
+      );
+      if (state.outputs.empty() && !state.windows.empty()) {
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), "windows");
+      }
       gtk_box_append(GTK_BOX(body), stack);
     } else if (state.showMonitors) {
-      gtk_box_append(GTK_BOX(body), makeScrolledList(state.outputList));
+      gtk_box_append(GTK_BOX(body), makeScrolledGrid(state, state.outputList, "No screens available"));
     } else if (state.showWindows) {
-      gtk_box_append(GTK_BOX(body), makeScrolledList(state.windowList));
+      gtk_box_append(GTK_BOX(body), makeScrolledGrid(state, state.windowList, "No windows available"));
     } else {
       GtkWidget* placeholder = makePlaceholder("No share source types requested");
       gtk_widget_set_vexpand(placeholder, TRUE);
@@ -656,12 +852,11 @@ namespace {
       gtk_box_append(GTK_BOX(body), placeholder);
     }
 
-    GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_widget_set_halign(buttons, GTK_ALIGN_END);
-    gtk_widget_set_margin_top(buttons, 12);
-    gtk_widget_set_margin_bottom(buttons, 12);
-    gtk_widget_set_margin_start(buttons, 12);
-    gtk_widget_set_margin_end(buttons, 12);
+    GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_widget_add_css_class(buttons, "picker-footer");
+    state.selectionLabel = makeLabel("Nothing selected", false, true);
+    gtk_widget_set_hexpand(state.selectionLabel, TRUE);
+    gtk_box_append(GTK_BOX(buttons), state.selectionLabel);
 
     GtkWidget* cancelButton = gtk_button_new_with_label("Cancel");
     state.shareButton = gtk_button_new_with_label("Share");
@@ -686,12 +881,11 @@ namespace {
     state->window = window;
     state->display = gtk_widget_get_display(window);
     gtk_widget_add_css_class(window, "umbriel-picker");
-    gtk_window_set_title(GTK_WINDOW(window), "Share");
-    gtk_window_set_default_size(GTK_WINDOW(window), 480, 420);
+    gtk_window_set_title(GTK_WINDOW(window), "Share a screen or window");
+    gtk_window_set_default_size(GTK_WINDOW(window), 760, 560);
 
-    GtkWidget* header = gtk_header_bar_new();
-    gtk_window_set_titlebar(GTK_WINDOW(window), header);
-    gtk_window_set_child(GTK_WINDOW(window), makeContent(*state, header));
+    // No custom titlebar: Umbriel owns the window decorations and their visibility.
+    gtk_window_set_child(GTK_WINDOW(window), makeContent(*state));
     gtk_window_set_default_widget(GTK_WINDOW(window), state->shareButton);
 
     GtkEventController* keyController = gtk_event_controller_key_new();
@@ -706,7 +900,33 @@ namespace {
           state->paletteFd, static_cast<GIOCondition>(G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL), onPaletteEvent, state
       );
     }
+    // Use GTK theme colors until the compositor sends its current palette.
+    if (!state->palette) {
+      applyPalette(
+          *state,
+          Palette{
+              .background = "@theme_bg_color",
+              .textPrimary = "@theme_fg_color",
+              .textMuted = "alpha(@theme_fg_color, 0.6)",
+              .accentPrimary = "@theme_selected_bg_color",
+              .accentSecondary = "@theme_selected_bg_color",
+              .warning = "",
+              .error = "",
+              .cornerRadius = 8,
+          }
+      );
+    }
     gtk_window_present(GTK_WINDOW(window));
+    if (!state->previewCards.empty()) {
+      std::vector<xdpu::PreviewSource> sources;
+      sources.reserve(state->previewCards.size());
+      for (const PreviewCard& card : state->previewCards) {
+        sources.push_back(card.source);
+      }
+      state->previews =
+          std::make_unique<xdpu::Previews>(std::move(sources), [state] { g_idle_add(onPreviewResults, state); });
+      requestVisiblePreviews(*state);
+    }
   }
 
 } // namespace
@@ -714,6 +934,10 @@ namespace {
 int main(int argc, char** argv) {
   AppState state = parseRequest(readStdin());
 
+  // GTK_CSD=0 asks the window manager for decorations; an explicit setting still wins.
+  g_setenv("GTK_CSD", "0", FALSE);
+  // Cairo keeps this small snapshot UI inexpensive; respect renderer overrides.
+  g_setenv("GSK_RENDERER", "cairo", FALSE);
   gtk_init();
 
   GtkApplication* app = gtk_application_new("dev.noctalia.UmbrielSharePicker", G_APPLICATION_NON_UNIQUE);
@@ -722,6 +946,7 @@ int main(int argc, char** argv) {
   if (!state.responding) {
     cancel(state);
   }
+  state.previews.reset();
   if (state.paletteWatch != 0) {
     g_source_remove(state.paletteWatch);
   }

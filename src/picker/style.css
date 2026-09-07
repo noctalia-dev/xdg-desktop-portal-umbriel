@@ -3,91 +3,166 @@
   color: @TEXT_PRIMARY@;
 }
 
-/* The window contour belongs to Umbriel: it rounds the surface at the radius nested inside the border, which is
-   smaller than the configured outer radius. A client-side arc at the outer radius uncovers a crescent of background
-   in every corner, so the window and its decoration stay square and the compositor clips them. */
+/* The compositor owns the outer contour, including border and corner clipping. */
 .umbriel-picker,
 .umbriel-picker decoration {
   border-radius: 0;
 }
 
-.umbriel-picker button,
-.umbriel-picker row,
-.umbriel-picker list,
-.umbriel-picker scrolledwindow,
-.umbriel-picker stackswitcher,
-.umbriel-picker scrollbar,
-.umbriel-picker trough,
-.umbriel-picker slider {
-  border-radius: @RADIUS@;
+.umbriel-picker .picker-heading {
+  padding: 24px 24px 18px;
 }
 
-.umbriel-picker headerbar windowcontrols button,
-.umbriel-picker headerbar button.titlebutton,
-.umbriel-picker headerbar windowcontrols button > image,
-.umbriel-picker headerbar button.titlebutton > image {
-  border-radius: @RADIUS@;
-}
-
-.umbriel-picker headerbar {
-  border-radius: 0;
-}
-
-.umbriel-picker headerbar stackswitcher button {
-  border-radius: 0;
-}
-
-.umbriel-picker headerbar stackswitcher button:first-child {
-  border-radius: @RADIUS@ 0 0 @RADIUS@;
-}
-
-.umbriel-picker headerbar stackswitcher button:last-child {
-  border-radius: 0 @RADIUS@ @RADIUS@ 0;
-}
-
-.umbriel-picker headerbar,
-.umbriel-picker stack,
-.umbriel-picker scrolledwindow,
-.umbriel-picker list {
-  background-color: @BACKGROUND@;
-  color: @TEXT_PRIMARY@;
-}
-
-.umbriel-picker row {
-  color: @TEXT_PRIMARY@;
-}
-
-/* The primary accent marks what will be shared; the secondary one is only the pointer's hover feedback. Selected is
-   declared last so a hovered selection keeps the primary accent. */
-.umbriel-picker row:hover {
-  background-color: @ACCENT_SECONDARY@;
-  color: @BACKGROUND@;
-}
-
-.umbriel-picker row:selected {
-  background-color: @ACCENT_PRIMARY@;
-  color: @BACKGROUND@;
+.umbriel-picker .picker-title {
+  font-size: 1.45em;
 }
 
 .umbriel-picker .dim-label {
   color: @TEXT_MUTED@;
+  opacity: 1;
 }
 
-.umbriel-picker row:hover label,
-.umbriel-picker row:selected label {
+.umbriel-picker .source-tabs {
+  margin: 0 24px 8px;
+}
+
+.umbriel-picker .source-tabs button {
+  min-width: 90px;
+  margin-right: 8px;
+}
+
+.umbriel-picker .source-grid {
+  padding: 16px 24px;
+  background: transparent;
+}
+
+.umbriel-picker .source-card {
+  padding: 3px;
+  border: 2px solid alpha(@TEXT_PRIMARY@, 0.12);
+  border-radius: @RADIUS@;
+  background: alpha(@TEXT_PRIMARY@, 0.035);
+  color: @TEXT_PRIMARY@;
+  outline-offset: 2px;
+}
+
+.umbriel-picker .source-card:hover {
+  border-color: @ACCENT_SECONDARY@;
+  background: alpha(@ACCENT_SECONDARY@, 0.08);
+}
+
+.umbriel-picker .source-card:selected {
+  border-color: @ACCENT_PRIMARY@;
+  background: alpha(@ACCENT_PRIMARY@, 0.12);
+}
+
+.umbriel-picker .source-card:focus-visible {
+  outline: 2px solid @ACCENT_SECONDARY@;
+}
+
+.umbriel-picker .preview {
+  background: alpha(@TEXT_PRIMARY@, 0.06);
+  color: @TEXT_MUTED@;
+  border-radius: @RADIUS@;
+}
+
+.umbriel-picker .preview-caption,
+.umbriel-picker .source-detail {
+  font-size: 0.85em;
+}
+
+.umbriel-picker .card-labels {
+  padding: 12px 9px 10px;
+}
+
+.umbriel-picker .selection-check {
+  margin: 8px;
+  padding: 4px;
+  border-radius: @RADIUS@;
+  background: @ACCENT_PRIMARY@;
   color: @BACKGROUND@;
+  opacity: 0;
 }
 
-.umbriel-picker row:hover .dim-label,
-.umbriel-picker row:selected .dim-label {
-  opacity: 0.72;
+.umbriel-picker .source-card:selected .selection-check {
+  opacity: 1;
+}
+
+.umbriel-picker .picker-footer {
+  padding: 16px 24px;
+  border-top: 1px solid alpha(@TEXT_PRIMARY@, 0.12);
+}
+
+/* Reset theme gradients and shadows as well as colors, including interaction states. */
+.umbriel-picker button {
+  background-image: none;
+  background-color: alpha(@TEXT_PRIMARY@, 0.07);
+  color: @TEXT_PRIMARY@;
+  border: 1px solid alpha(@TEXT_PRIMARY@, 0.15);
+  border-radius: @RADIUS@;
+  box-shadow: none;
+  text-shadow: none;
+  padding: 9px 18px;
+  font-weight: 600;
+}
+
+.umbriel-picker button:hover {
+  background-image: none;
+  background-color: alpha(@ACCENT_SECONDARY@, 0.16);
+  border-color: @ACCENT_SECONDARY@;
+}
+
+.umbriel-picker button:checked,
+.umbriel-picker button:active {
+  background-image: none;
+  background-color: alpha(@ACCENT_PRIMARY@, 0.18);
+  border-color: @ACCENT_PRIMARY@;
+  color: @TEXT_PRIMARY@;
 }
 
 .umbriel-picker button.suggested-action {
+  background-image: none;
   background-color: @ACCENT_PRIMARY@;
+  border-color: @ACCENT_PRIMARY@;
   color: @BACKGROUND@;
 }
 
-.umbriel-picker button.suggested-action:focus-visible {
-  outline-color: @ACCENT_SECONDARY@;
+.umbriel-picker button.suggested-action:hover,
+.umbriel-picker button.suggested-action:active {
+  background-color: @ACCENT_SECONDARY@;
+  border-color: @ACCENT_SECONDARY@;
+}
+
+.umbriel-picker button:disabled,
+.umbriel-picker button.suggested-action:disabled {
+  background-image: none;
+  background-color: alpha(@TEXT_PRIMARY@, 0.06);
+  border-color: transparent;
+  color: @TEXT_MUTED@;
+  opacity: 0.55;
+}
+
+.umbriel-picker button:focus-visible {
+  outline: 2px solid @ACCENT_SECONDARY@;
+  outline-offset: 2px;
+}
+
+/* Only the slider is drawn: the track stays invisible, and the fill keeps the
+   theme's padding-box clip so it cannot bleed across the slider's transparent
+   border and render wider than the track. */
+.umbriel-picker scrollbar,
+.umbriel-picker scrollbar trough {
+  background: transparent;
+  border: none;
+}
+
+.umbriel-picker scrollbar slider {
+  background-color: alpha(@TEXT_MUTED@, 0.5);
+  background-clip: padding-box;
+  border-radius: @RADIUS@;
+  min-width: 5px;
+  min-height: 5px;
+}
+
+.umbriel-picker scrollbar slider:hover {
+  background-color: alpha(@TEXT_MUTED@, 0.8);
 }

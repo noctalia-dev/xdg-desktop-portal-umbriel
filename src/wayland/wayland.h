@@ -41,6 +41,7 @@ namespace xdpu {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t stride = 0;
+    uint32_t transform = 0;
     void* data = nullptr;
     size_t size = 0;
   };
@@ -174,6 +175,7 @@ namespace xdpu {
     createShmBuffer(uint32_t width, uint32_t height, uint32_t format, uint32_t stride, int fd, size_t size);
 
     void roundtrip();
+    void flush();
 
     static WaylandContext* defaultContext();
     static uint32_t preferredShmFormat(const std::vector<uint32_t>& formats);

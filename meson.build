@@ -109,9 +109,14 @@ if gtk4_dep.found()
   )
   executable(
     'umbriel-share-picker',
-    files('src/picker/main.cpp') + picker_resources,
-    include_directories: include_directories('src'),
-    dependencies: [gtk4_dep, nlohmann_json_dep],
+    files(
+      'src/picker/main.cpp',
+      'src/picker/previews.cpp',
+      'src/wayland/wayland.cpp',
+      'src/loop/loop.cpp',
+    ) + picker_resources + protocol_sources,
+    include_directories: [include_directories('src'), include_directories('.')],
+    dependencies: [gtk4_dep, nlohmann_json_dep, wayland_client_dep, libdrm_dep, dependency('threads')],
     install: true,
     install_dir: get_option('libexecdir'),
   )

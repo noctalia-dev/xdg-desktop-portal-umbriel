@@ -54,6 +54,32 @@ nix build
 
 A dev shell is also available via `nix develop`.
 
+## Share picker
+
+The picker shows screen and window thumbnails in a responsive grid. Click a card
+and choose **Share**; requests that allow multiple sources support clicking cards
+to select or deselect them, including across tabs. Space toggles a focused card in
+multiple-selection mode, Enter shares, and Escape cancels.
+
+Window decorations are delegated to the compositor: the picker sets `GTK_CSD=0`
+and draws no titlebar, so Umbriel owns the border and corner clipping. Controls
+follow Umbriel's live palette and corner radius, with GTK theme colors as a
+fallback. The picker defaults to Cairo rendering to avoid GPU renderer startup
+and shutdown overhead; explicit `GTK_CSD` or `GSK_RENDERER` settings still take
+precedence.
+
+Screen and window previews are snapshots taken as cards become visible using the same Wayland image
+capture protocols as screencasting. Hidden tabs and offscreen cards are deferred:
+captures start when a card is scrolled or switched into view, and each finished
+thumbnail is handed to the UI on the main loop. Each capture session is destroyed
+and its cleanup acknowledged before the worker goes idle. Snapshots load
+asynchronously, remain in memory,
+and are discarded when the picker closes. Sources without a supported preview
+remain selectable with a placeholder. The chooser's JSON input/output format is
+unchanged. Window capture requires Umbriel's fix for output membership and frame
+pacing across the desktop and capture scenes. Older compositor builds can leave
+applications waiting for frame callbacks after a window capture ends.
+
 ## Configuration
 
 The config file lives at `$XDG_CONFIG_HOME/xdg-desktop-portal-umbriel/config.toml` (or the system-installed default).
