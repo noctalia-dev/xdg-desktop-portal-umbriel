@@ -106,6 +106,18 @@ namespace xdpu {
         }
       }
 
+      // The twin only paces frames; losing it degrades to single-session
+      // pacing instead of ending the stream.  With a frame still live on it,
+      // frameFailed finishes the teardown once that frame settles.
+      void twinStopped() {
+        if (stopped || !twinCapture || pendingFrame[1] != nullptr) {
+          return;
+        }
+        twinCapture.reset();
+        std::fprintf(stderr, "session: twin capture stopped early, single-session pacing\n");
+        processRequest();
+      }
+
       void scheduleProcess(int delayMs) {
         if (fpsTimer != 0 || loop == nullptr) {
           return;
@@ -120,13 +132,16 @@ namespace xdpu {
       }
 
       void processRequest() {
-        if (stopped
-            || !stream
-            || !stream->connected()
-            || constraintsDirty
-            || framesInFlight >= maxInFlight()
-            || waitingForConstraints
-            || reconfiguring) {
+        if (stopped || !stream || !stream->connected() || waitingForConstraints || reconfiguring) {
+          return;
+        }
+        if (constraintsDirty) {
+          // reconfigureStream() no-ops while frames are in flight; the last
+          // frameReady re-enters here once they drain.
+          reconfigureStream();
+          return;
+        }
+        if (framesInFlight >= maxInFlight()) {
           return;
         }
 
@@ -277,10 +292,6 @@ namespace xdpu {
 
         lastFrame = std::chrono::steady_clock::now();
         stream->queueBuffer(pwBuffer);
-        if (constraintsDirty && framesInFlight == 0 && !reconfiguring) {
-          reconfigureStream();
-          return;
-        }
         processRequest();
       }
 
@@ -291,7 +302,11 @@ namespace xdpu {
           stream->queueBuffer(pwBuffer);
         }
         if (reason == CaptureFailureReason::Stopped) {
-          captureStopped();
+          if (slot == 1 && twinCapture) {
+            twinStopped();
+          } else {
+            captureStopped();
+          }
         } else if (reason == CaptureFailureReason::ConstraintsChanged) {
           if (constraintsDirty) {
             reconfigureStream();
@@ -395,9 +410,8 @@ namespace xdpu {
 
   bool Session::addStream(
       Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
-      std::unique_ptr<WaylandContext::CaptureSession> twinCapture, std::unique_ptr<PipeWireStream> stream,
-      const CaptureConstraints& constraints, const Selection& selection, uint32_t maxFps,
-      ClosedHandler backendClosedHandler
+      CaptureCursorMode cursorMode, std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints,
+      const Selection& selection, uint32_t maxFps, ClosedHandler backendClosedHandler
   ) {
     if (!capture || !stream || capture->stopped) {
       return false;
@@ -407,26 +421,43 @@ namespace xdpu {
     state->loop = &loop;
     state->wayland = &wayland;
     state->capture = std::move(capture);
-    state->twinCapture = std::move(twinCapture);
     state->stream = std::move(stream);
     state->constraints = constraints;
     state->selection = selection;
     state->maxFps = maxFps;
     state->backendClosedHandler = std::move(backendClosedHandler);
 
+    // A second session for the same source keeps a copy request pending at
+    // every compositor frame boundary (see kCaptureSlots).  Its constraints
+    // are ignored — the stream is shaped by the primary's.
+    if (selection.kind == Session::SourceKind::Monitor) {
+      state->twinCapture = wayland.createOutputCapture(selection.output, cursorMode, nullptr);
+    } else {
+      state->twinCapture = wayland.createToplevelCapture(selection.identifier, cursorMode, nullptr);
+    }
+    if (!state->twinCapture || state->twinCapture->stopped) {
+      state->twinCapture.reset();
+      std::fprintf(stderr, "session: twin capture unavailable, single-session pacing\n");
+    }
+
     std::weak_ptr<Impl::StreamState> weak = state;
     for (auto* session : {&state->capture, &state->twinCapture}) {
       if (*session == nullptr) {
         continue;
       }
+      const bool isTwin = session == &state->twinCapture;
       (*session)->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
         if (auto streamState = weak.lock()) {
           streamState->constraintsChanged(newConstraints);
         }
       };
-      (*session)->stoppedCb = [weak]() {
+      (*session)->stoppedCb = [weak, isTwin]() {
         if (auto streamState = weak.lock()) {
-          streamState->captureStopped();
+          if (isTwin) {
+            streamState->twinStopped();
+          } else {
+            streamState->captureStopped();
+          }
         }
       };
     }

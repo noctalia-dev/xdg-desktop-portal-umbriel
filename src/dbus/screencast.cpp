@@ -328,11 +328,8 @@ namespace xdpu {
     struct PendingCapture {
       Session::Selection selection;
       std::unique_ptr<WaylandContext::CaptureSession> capture;
-      std::unique_ptr<WaylandContext::CaptureSession> twin;
       CaptureConstraints constraints;
       bool hasConstraints = false;
-      CaptureConstraints twinConstraints;
-      bool hasTwinConstraint = false;
     };
 
     Loop& loop;
@@ -449,6 +446,7 @@ namespace xdpu {
       std::vector<PendingCapture> pending;
       int timeoutTimer = 0;
       bool done = false;
+      CaptureCursorMode cursorMode = CaptureCursorMode::Hidden;
 
       StartOperation(Impl& portal, PortalResponse&& result, std::shared_ptr<Session> session)
           : portal(portal), result(std::move(result)), session(std::move(session)) {}
@@ -591,7 +589,7 @@ namespace xdpu {
         pending.reserve(selections.size());
         auto self = shared_from_this();
         std::weak_ptr<StartOperation> weakSelf = self;
-        CaptureCursorMode cursorMode = CaptureCursorMode::Hidden;
+        cursorMode = CaptureCursorMode::Hidden;
         if (session->cursorMode() == kCursorEmbedded) {
           cursorMode = CaptureCursorMode::Embedded;
         } else if (session->cursorMode() == kCursorMetadata) {
@@ -605,16 +603,16 @@ namespace xdpu {
 
         for (const Session::Selection& selection : selections) {
           const size_t index = pending.size();
-          pending.push_back(PendingCapture{selection, nullptr, nullptr, {}, false, {}, false});
-          auto makeConstraintsCallback = [weakSelf, index](bool fromTwin) {
-            return [weakSelf, index, fromTwin](const CaptureConstraints& constraints) {
-              if (auto self = weakSelf.lock(); self && !self->done) {
-                self->constraintsReady(index, fromTwin, constraints);
-              }
-            };
+          pending.push_back(PendingCapture{selection, nullptr, {}, false});
+          ConstraintsCallback callback = [weakSelf, index](const CaptureConstraints& constraints) {
+            auto self = weakSelf.lock();
+            if (!self || self->done) {
+              return;
+            }
+            self->constraintsReady(index, constraints);
           };
 
-          pending[index].capture = createCapture(selection, cursorMode, makeConstraintsCallback(false));
+          pending[index].capture = createCapture(selection, cursorMode, std::move(callback));
 
           if (!pending[index].capture) {
             std::fprintf(
@@ -623,24 +621,6 @@ namespace xdpu {
             );
             finish(2, {});
             return;
-          }
-
-          // A second session for the same source keeps a copy request pending
-          // at every compositor frame boundary.  Its frames must paint the
-          // cursor exactly like the primary's, or consumers see it flicker.
-          const CaptureCursorMode twinCursorMode =
-              cursorMode == CaptureCursorMode::Embedded ? CaptureCursorMode::Embedded : CaptureCursorMode::Hidden;
-          pending[index].twin = createCapture(selection, twinCursorMode, makeConstraintsCallback(true));
-          if (!pending[index].twin) {
-            std::fprintf(stderr, "screencast: twin capture unavailable, single session pacing\n");
-          } else {
-            pending[index].twin->stoppedCb = [weakSelf, index]() {
-              auto self = weakSelf.lock();
-              if (!self || self->done) {
-                return;
-              }
-              self->twinStopped(index);
-            };
           }
         }
 
@@ -656,32 +636,12 @@ namespace xdpu {
         maybeCompleteCaptures();
       }
 
-      void twinStopped(size_t index) {
+      void constraintsReady(size_t index, const CaptureConstraints& constraints) {
         if (done || index >= pending.size()) {
           return;
         }
-        if (pending[index].twin) {
-          pending[index].twin.reset();
-          std::fprintf(stderr, "screencast: twin capture stopped early, single-session pacing\n");
-        }
-        maybeCompleteCaptures();
-      }
-
-      void constraintsReady(size_t index, bool fromTwin, const CaptureConstraints& constraints) {
-        if (done || index >= pending.size()) {
-          return;
-        }
-        PendingCapture& item = pending[index];
-        if (fromTwin) {
-          if (!item.twin) {
-            return;
-          }
-          item.twinConstraints = constraints;
-          item.hasConstraints = true;
-        } else {
-          item.constraints = constraints;
-          item.hasTwinConstraint = true;
-        }
+        pending[index].constraints = constraints;
+        pending[index].hasConstraints = true;
         maybeCompleteCaptures();
       }
 
@@ -691,14 +651,6 @@ namespace xdpu {
         }
         for (const PendingCapture& item : pending) {
           if (!item.capture || !item.hasConstraints) {
-            return;
-          }
-          if (item.twin && !item.hasTwinConstraint) {
-            return;
-          }
-          if (item.twin && item.twinConstraints != item.constraints) {
-            std::fprintf(stderr, "screencast: twin capture constraints diverge from pacing\n");
-            finish(2, {});
             return;
           }
         }
@@ -737,15 +689,12 @@ namespace xdpu {
           // Clear constraintsCb before transfer to break the reference cycle
           // (callback may hold a weak_ptr whose closure captured other state).
           item.capture->constraintsCb = nullptr;
-          if (item.twin) {
-            item.twin->constraintsCb = nullptr;
-          }
 
           const std::string sessionPath = session->path();
           Impl* portalPtr = &portal;
           if (!session->addStream(
-                  portal.loop, portal.wayland, std::move(item.capture), std::move(item.twin), std::move(stream),
-                  item.constraints, item.selection, static_cast<uint32_t>(std::max(0, portal.config.screencast.maxFps)),
+                  portal.loop, portal.wayland, std::move(item.capture), cursorMode, std::move(stream), item.constraints,
+                  item.selection, static_cast<uint32_t>(std::max(0, portal.config.screencast.maxFps)),
                   [portalPtr, sessionPath]() {
                     const auto it = portalPtr->sessions.find(sessionPath);
                     if (it != portalPtr->sessions.end()) {
