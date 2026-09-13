@@ -243,12 +243,11 @@ namespace xdpu {
           return;
         }
 
-        wayland->requestCursorFrame(*capture);
-
+        WaylandContext::CaptureSession& source = slot == 1 && twinCapture ? *twinCapture : *capture;
         ++framesInFlight;
         std::weak_ptr<StreamState> weak = shared_from_this();
         auto frame = wayland->captureFrame(
-            slot == 1 && twinCapture ? *twinCapture : *capture, captureBuffer->wlBuffer,
+            source, captureBuffer->wlBuffer,
             [weak, slot, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
               if (auto self = weak.lock()) {
                 self->frameReady(slot, pwBuffer, sec, nsec);
@@ -287,7 +286,8 @@ namespace xdpu {
             header->dts_offset = 0;
             header->seq = ++sequence;
           }
-          stream->setCursorMetadata(pwBuffer, capture->cursorMetadata());
+          WaylandContext::CaptureSession& source = slot == 1 && twinCapture ? *twinCapture : *capture;
+          stream->setCursorMetadata(pwBuffer, source.cursorMetadata());
         }
 
         lastFrame = std::chrono::steady_clock::now();
