@@ -60,9 +60,13 @@ namespace xdpu {
     struct DmabufFormat {
       uint32_t format = 0;
       uint64_t modifier = 0;
+
+      bool operator==(const DmabufFormat&) const = default;
     };
 
     std::vector<DmabufFormat> dmabufFormats;
+
+    bool operator==(const CaptureConstraints&) const = default;
   };
 
   enum class CaptureCursorMode {

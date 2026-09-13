@@ -4,8 +4,10 @@
 #include "pipewire/pipewire.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
+#include <memory>
 #include <pipewire/stream.h>
 #include <sdbus-c++/sdbus-c++.h>
 #include <spa/buffer/buffer.h>
@@ -18,6 +20,10 @@ namespace xdpu {
 
     constexpr char kSessionInterface[] = "org.freedesktop.impl.portal.Session";
     constexpr uint64_t kNsecPerSec = 1000000000ull;
+    // Two capture sessions per source keep a copy request pending at every
+    // compositor frame boundary; ext_image_copy_capture_v1 allows at most one
+    // live frame per session, so the sessions hand off instead of pipelining.
+    constexpr int kCaptureSlots = 2;
 
     uint32_t sourceType(Session::SourceKind kind) { return kind == Session::SourceKind::Window ? 2u : 1u; }
 
@@ -32,6 +38,7 @@ namespace xdpu {
       Loop* loop = nullptr;
       WaylandContext* wayland = nullptr;
       std::unique_ptr<WaylandContext::CaptureSession> capture;
+      std::unique_ptr<WaylandContext::CaptureSession> twinCapture;
       std::unique_ptr<PipeWireStream> stream;
       CaptureConstraints constraints;
       Selection selection;
@@ -39,16 +46,18 @@ namespace xdpu {
       uint32_t maxFps = 0;
       int fpsTimer = 0;
       bool stopped = false;
-      bool frameInFlight = false;
+      int framesInFlight = 0;
       bool constraintsDirty = false;
       bool waitingForConstraints = false;
       bool reconfiguring = false;
       CaptureConstraints reconfigureTarget;
-      std::unique_ptr<WaylandContext::CaptureFrame> pendingFrame;
+      std::array<std::unique_ptr<WaylandContext::CaptureFrame>, kCaptureSlots> pendingFrame;
       uint64_t sequence = 0;
       std::chrono::steady_clock::time_point lastFrame{};
 
       ~StreamState() { stop(); }
+
+      int maxInFlight() const { return twinCapture ? kCaptureSlots : 1; }
 
       StreamResult result() const {
         StreamResult value;
@@ -72,16 +81,18 @@ namespace xdpu {
           fpsTimer = 0;
           loop->removeTimer(timer);
         }
-        // Destroy the pending frame first — its proxy must be gone before
-        // the capture session or stream buffers it references.
-        pendingFrame.reset();
+        // Destroy the pending frame first — their proxies must be gone before
+        // the capture session or stream buffers they references.
+        for (auto& frame : pendingFrame) {
+          frame.reset();
+        }
         if (stream) {
           stream->onProcessRequest = nullptr;
           stream->onAddBuffer = nullptr;
           stream->onRemoveBuffer = nullptr;
           stream->disconnect();
         }
-        frameInFlight = false;
+        framesInFlight = 0;
       }
 
       void captureStopped() {
@@ -109,7 +120,13 @@ namespace xdpu {
       }
 
       void processRequest() {
-        if (stopped || !stream || !stream->connected() || frameInFlight || waitingForConstraints || reconfiguring) {
+        if (stopped
+            || !stream
+            || !stream->connected()
+            || constraintsDirty
+            || framesInFlight >= maxInFlight()
+            || waitingForConstraints
+            || reconfiguring) {
           return;
         }
 
@@ -131,16 +148,22 @@ namespace xdpu {
         if (stopped) {
           return;
         }
+        // Every done event settles a pending constraints-wait — dropping a
+        // redundant one here would leave the stream waiting forever.
+        waitingForConstraints = false;
+        if (newConstraints == constraints) {
+          scheduleProcess(1);
+          return;
+        }
         constraints = newConstraints;
         constraintsDirty = true;
-        waitingForConstraints = false;
-        if (!frameInFlight && !reconfiguring) {
+        if (framesInFlight == 0 && !reconfiguring) {
           reconfigureStream();
         }
       }
 
       void reconfigureStream() {
-        if (stopped || !stream || frameInFlight || reconfiguring || !constraintsDirty) {
+        if (stopped || !stream || framesInFlight > 0 || reconfiguring || !constraintsDirty) {
           return;
         }
 
@@ -174,8 +197,21 @@ namespace xdpu {
         }
       }
 
+      [[nodiscard]] int freeSlots() const {
+        for (int slot = 0; slot < maxInFlight(); ++slot) {
+          if (pendingFrame[slot] == nullptr) {
+            return slot;
+          }
+        }
+        return -1;
+      }
+
       void requestFrame() {
-        if (stopped || !stream || !stream->connected() || !capture || wayland == nullptr || frameInFlight) {
+        if (stopped || !stream || !stream->connected() || !capture || wayland == nullptr) {
+          return;
+        }
+        const int slot = freeSlots();
+        if (slot < 0) {
           return;
         }
 
@@ -194,30 +230,31 @@ namespace xdpu {
 
         wayland->requestCursorFrame(*capture);
 
-        frameInFlight = true;
+        ++framesInFlight;
         std::weak_ptr<StreamState> weak = shared_from_this();
-        pendingFrame = wayland->captureFrame(
-            *capture, captureBuffer->wlBuffer,
-            [weak, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
+        auto frame = wayland->captureFrame(
+            slot == 1 && twinCapture ? *twinCapture : *capture, captureBuffer->wlBuffer,
+            [weak, slot, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
               if (auto self = weak.lock()) {
-                self->frameReady(pwBuffer, sec, nsec);
+                self->frameReady(slot, pwBuffer, sec, nsec);
               }
             },
-            [weak, pwBuffer](CaptureFailureReason reason) {
+            [weak, slot, pwBuffer](CaptureFailureReason reason) {
               if (auto self = weak.lock()) {
-                self->frameFailed(pwBuffer, reason);
+                self->frameFailed(slot, pwBuffer, reason);
               }
             }
         );
-        if (!pendingFrame) {
-          // captureFrame invoked onFailed synchronously.
-          return;
+        // A synchronous failure has already run frameFailed, which balanced
+        // framesInFlight; only take ownership of a real frame.
+        if (frame) {
+          pendingFrame[slot] = std::move(frame);
         }
       }
 
-      void frameReady(pw_buffer* pwBuffer, uint64_t sec, uint32_t nsec) {
-        pendingFrame.reset(); // frame proxy already destroyed by the callback
-        frameInFlight = false;
+      void frameReady(int slot, pw_buffer* pwBuffer, uint64_t sec, uint32_t nsec) {
+        pendingFrame[slot].reset(); // frame proxy already destroyed by the callback
+        --framesInFlight;
         // A stop can race with the Wayland ready event.  Never return a
         // buffer to a PipeWire stream after it has been disconnected.
         if (stopped || !stream || !stream->connected() || !stream->ownsBuffer(pwBuffer)) {
@@ -240,12 +277,16 @@ namespace xdpu {
 
         lastFrame = std::chrono::steady_clock::now();
         stream->queueBuffer(pwBuffer);
+        if (constraintsDirty && framesInFlight == 0 && !reconfiguring) {
+          reconfigureStream();
+          return;
+        }
         processRequest();
       }
 
-      void frameFailed(pw_buffer* pwBuffer, CaptureFailureReason reason) {
-        pendingFrame.reset(); // frame proxy already destroyed by the callback
-        frameInFlight = false;
+      void frameFailed(int slot, pw_buffer* pwBuffer, CaptureFailureReason reason) {
+        pendingFrame[slot].reset(); // frame proxy already destroyed by the callback
+        --framesInFlight;
         if (!stopped && stream && stream->connected() && stream->ownsBuffer(pwBuffer)) {
           stream->queueBuffer(pwBuffer);
         }
@@ -354,8 +395,9 @@ namespace xdpu {
 
   bool Session::addStream(
       Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
-      std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints, const Selection& selection,
-      uint32_t maxFps, ClosedHandler backendClosedHandler
+      std::unique_ptr<WaylandContext::CaptureSession> twinCapture, std::unique_ptr<PipeWireStream> stream,
+      const CaptureConstraints& constraints, const Selection& selection, uint32_t maxFps,
+      ClosedHandler backendClosedHandler
   ) {
     if (!capture || !stream || capture->stopped) {
       return false;
@@ -365,6 +407,7 @@ namespace xdpu {
     state->loop = &loop;
     state->wayland = &wayland;
     state->capture = std::move(capture);
+    state->twinCapture = std::move(twinCapture);
     state->stream = std::move(stream);
     state->constraints = constraints;
     state->selection = selection;
@@ -372,16 +415,21 @@ namespace xdpu {
     state->backendClosedHandler = std::move(backendClosedHandler);
 
     std::weak_ptr<Impl::StreamState> weak = state;
-    state->capture->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
-      if (auto streamState = weak.lock()) {
-        streamState->constraintsChanged(newConstraints);
+    for (auto* session : {&state->capture, &state->twinCapture}) {
+      if (*session == nullptr) {
+        continue;
       }
-    };
-    state->capture->stoppedCb = [weak]() {
-      if (auto streamState = weak.lock()) {
-        streamState->captureStopped();
-      }
-    };
+      (*session)->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
+        if (auto streamState = weak.lock()) {
+          streamState->constraintsChanged(newConstraints);
+        }
+      };
+      (*session)->stoppedCb = [weak]() {
+        if (auto streamState = weak.lock()) {
+          streamState->captureStopped();
+        }
+      };
+    }
     state->stream->onProcessRequest = [weak]() {
       if (auto streamState = weak.lock()) {
         streamState->processRequest();
