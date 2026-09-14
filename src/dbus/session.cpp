@@ -81,8 +81,8 @@ namespace xdpu {
           fpsTimer = 0;
           loop->removeTimer(timer);
         }
-        // Destroy the pending frame first — their proxies must be gone before
-        // the capture session or stream buffers they references.
+        // Destroy the pending frames first — their proxies must be gone before
+        // the capture session or stream buffers they reference.
         for (auto& frame : pendingFrame) {
           frame.reset();
         }
@@ -286,8 +286,7 @@ namespace xdpu {
             header->dts_offset = 0;
             header->seq = ++sequence;
           }
-          WaylandContext::CaptureSession& source = slot == 1 && twinCapture ? *twinCapture : *capture;
-          stream->setCursorMetadata(pwBuffer, source.cursorMetadata());
+          stream->setCursorMetadata(pwBuffer, capture->cursorMetadata()); // twin never has a cursor stack
         }
 
         lastFrame = std::chrono::steady_clock::now();
@@ -427,13 +426,18 @@ namespace xdpu {
     state->maxFps = maxFps;
     state->backendClosedHandler = std::move(backendClosedHandler);
 
-    // A second session for the same source keeps a copy request pending at
-    // every compositor frame boundary (see kCaptureSlots).  Its constraints
-    // are ignored — the stream is shaped by the primary's.
+    // A second session keeps a copy request pending at every frame boundary
+    // (see kCaptureSlots).  It never carries a cursor stack — two stacks
+    // doubled the sprite captures per cursor event and froze the cursor —
+    // so it just matches the primary's painted-cursor state.  Its
+    // constraints still reach constraintsChanged; the primary shapes the
+    // stream.
+    const bool paintsCursors = cursorMode != CaptureCursorMode::Hidden && !state->capture->hasCursorMetadata();
+    const CaptureCursorMode twinCursorMode = paintsCursors ? CaptureCursorMode::Embedded : CaptureCursorMode::Hidden;
     if (selection.kind == Session::SourceKind::Monitor) {
-      state->twinCapture = wayland.createOutputCapture(selection.output, cursorMode, nullptr);
+      state->twinCapture = wayland.createOutputCapture(selection.output, twinCursorMode, nullptr);
     } else {
-      state->twinCapture = wayland.createToplevelCapture(selection.identifier, cursorMode, nullptr);
+      state->twinCapture = wayland.createToplevelCapture(selection.identifier, twinCursorMode, nullptr);
     }
     if (!state->twinCapture || state->twinCapture->stopped) {
       state->twinCapture.reset();
