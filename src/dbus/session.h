@@ -3,8 +3,10 @@
 #include "dbus/request.h"
 #include "wayland/wayland.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,24 @@ namespace xdpu {
 
   class Loop;
   class PipeWireStream;
+
+  enum class RestoreDataVersion : uint32_t {
+    // Windows stored as app_id, which names an application that may have multiple windows.
+    AppIdOnly = 1,
+    // Windows stored with the ext-foreign-toplevel identifier.
+    Identifier = 2,
+  };
+
+  inline constexpr RestoreDataVersion kRestoreDataVersion = RestoreDataVersion::Identifier;
+
+  constexpr std::optional<RestoreDataVersion> restoreDataVersionFromWire(uint32_t wire) {
+    switch (static_cast<RestoreDataVersion>(wire)) {
+    case RestoreDataVersion::AppIdOnly:
+    case RestoreDataVersion::Identifier:
+      return static_cast<RestoreDataVersion>(wire);
+    }
+    return std::nullopt;
+  }
 
   class Session {
   public:

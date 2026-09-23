@@ -95,13 +95,6 @@ namespace xdpu {
       return it == toplevels.end() ? nullptr : &*it;
     }
 
-    const ToplevelInfo* findToplevelByAppId(const WaylandContext& wayland, const std::string& appId) {
-      const auto& toplevels = wayland.toplevels();
-      const auto it =
-          std::ranges::find_if(toplevels, [&](const ToplevelInfo& toplevel) { return toplevel.appId == appId; });
-      return it == toplevels.end() ? nullptr : &*it;
-    }
-
     Session::Selection selectionForOutput(const OutputInfo& output) {
       Session::Selection selection;
       selection.kind = Session::SourceKind::Monitor;
@@ -123,6 +116,56 @@ namespace xdpu {
       return selection;
     }
 
+    std::optional<Session::Selection> parseWindowEntry(const PortalResults& entry, RestoreDataVersion version) {
+      switch (version) {
+      case RestoreDataVersion::AppIdOnly:
+        // An intermediate build wrote identifiers into records still labelled AppIdOnly, so one
+        // may be present; it predates the guarantee, so prompt rather than trust it.
+        return std::nullopt;
+
+      case RestoreDataVersion::Identifier: {
+        // The protocol guarantees a nonempty identifier, not a nonempty app_id.
+        const auto identifier = dictString(entry, "identifier");
+        if (!identifier || identifier->empty()) {
+          return std::nullopt;
+        }
+        Session::Selection selection;
+        selection.kind = Session::SourceKind::Window;
+        selection.identifier = *identifier;
+        selection.appId = dictString(entry, "app_id").value_or(std::string{});
+        selection.title = dictString(entry, "title").value_or(std::string{});
+        return selection;
+      }
+      }
+      return std::nullopt;
+    }
+
+    std::optional<Session::Selection> parseMonitorEntry(const PortalResults& entry) {
+      const auto output = dictString(entry, "output");
+      if (!output || output->empty()) {
+        return std::nullopt;
+      }
+      Session::Selection selection;
+      selection.kind = Session::SourceKind::Monitor;
+      selection.output = *output;
+      selection.title = dictString(entry, "title").value_or(std::string{});
+      return selection;
+    }
+
+    std::optional<Session::Selection> parseEntry(const PortalResults& entry, RestoreDataVersion version) {
+      const auto kind = dictString(entry, "kind");
+      if (!kind) {
+        return std::nullopt;
+      }
+      if (*kind == "monitor") {
+        return parseMonitorEntry(entry);
+      }
+      if (*kind == "window") {
+        return parseWindowEntry(entry, version);
+      }
+      return std::nullopt;
+    }
+
     std::vector<Session::Selection> parseRestoreData(const PortalResults& options) {
       const auto it = options.find("restore_data");
       if (it == options.end() || !it->second.containsValueOfType<RestoreTuple>()) {
@@ -136,7 +179,8 @@ namespace xdpu {
         return {};
       }
 
-      if (std::get<0>(restore) != "umbriel" || std::get<1>(restore) != 1) {
+      const auto version = restoreDataVersionFromWire(std::get<1>(restore));
+      if (std::get<0>(restore) != "umbriel" || !version) {
         return {};
       }
 
@@ -151,52 +195,52 @@ namespace xdpu {
       }
 
       std::vector<Session::Selection> selections;
+      selections.reserve(entries.size());
       for (const PortalResults& entry : entries) {
-        const auto kind = dictString(entry, "kind");
-        if (!kind) {
-          continue;
+        const auto selection = parseEntry(entry, *version);
+        if (!selection) {
+          return {};
         }
-
-        Session::Selection selection;
-        selection.title = dictString(entry, "title").value_or(std::string{});
-        if (*kind == "monitor") {
-          const auto output = dictString(entry, "output");
-          if (!output || output->empty()) {
-            continue;
-          }
-          selection.kind = Session::SourceKind::Monitor;
-          selection.output = *output;
-        } else if (*kind == "window") {
-          const auto appId = dictString(entry, "app_id");
-          if (!appId || appId->empty()) {
-            continue;
-          }
-          selection.kind = Session::SourceKind::Window;
-          selection.appId = *appId;
-        } else {
-          continue;
-        }
-        selections.push_back(std::move(selection));
+        selections.push_back(*selection);
       }
       return selections;
     }
 
-    std::vector<Session::Selection> matchRestoreSelections(
+    std::optional<Session::Selection>
+    resolveSelection(const WaylandContext& wayland, const Session::Selection& stored) {
+      switch (stored.kind) {
+      case Session::SourceKind::Monitor:
+        if (const OutputInfo* output = findOutput(wayland, stored.output)) {
+          return selectionForOutput(*output);
+        }
+        return std::nullopt;
+
+      case Session::SourceKind::Window:
+        if (const ToplevelInfo* toplevel = findToplevelByIdentifier(wayland, stored.identifier)) {
+          return selectionForToplevel(*toplevel);
+        }
+        return std::nullopt;
+      }
+      return std::nullopt;
+    }
+
+    // Refused whole rather than narrowed: dropping a source the user chose is a
+    // silent substitution, and which one got dropped would depend on entry order.
+    std::vector<Session::Selection> resolveRestoreSelections(
         const WaylandContext& wayland, const std::vector<Session::Selection>& restore, bool multiple
     ) {
-      std::vector<Session::Selection> matches;
-      for (const Session::Selection& stored : restore) {
-        if (stored.kind == Session::SourceKind::Monitor) {
-          if (const OutputInfo* output = findOutput(wayland, stored.output)) {
-            matches.push_back(selectionForOutput(*output));
-          }
-        } else if (const ToplevelInfo* toplevel = findToplevelByAppId(wayland, stored.appId)) {
-          matches.push_back(selectionForToplevel(*toplevel));
-        }
+      if (restore.empty() || (!multiple && restore.size() > 1)) {
+        return {};
+      }
 
-        if (!multiple && !matches.empty()) {
-          break;
+      std::vector<Session::Selection> matches;
+      matches.reserve(restore.size());
+      for (const Session::Selection& stored : restore) {
+        const auto live = resolveSelection(wayland, stored);
+        if (!live) {
+          return {};
         }
+        matches.push_back(*live);
       }
       return matches;
     }
@@ -305,6 +349,7 @@ namespace xdpu {
         entry["title"] = selection.title;
         if (selection.kind == Session::SourceKind::Window) {
           entry["app_id"] = selection.appId;
+          entry["identifier"] = selection.identifier;
         } else {
           entry["output"] = selection.output;
         }
@@ -451,7 +496,8 @@ namespace xdpu {
 
       void start(const std::string& handle) {
         attachRequest(handle);
-        const auto restored = matchRestoreSelections(portal.wayland, session->restoreSelections(), session->multiple());
+        const auto restored =
+            resolveRestoreSelections(portal.wayland, session->restoreSelections(), session->multiple());
         if (!restored.empty()) {
           startCaptures(restored);
           return;
