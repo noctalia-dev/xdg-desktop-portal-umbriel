@@ -10,9 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -22,7 +19,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
 #include <tuple>
 #include <utility>
 
@@ -119,8 +115,7 @@ namespace xdpu {
     std::optional<Session::Selection> parseWindowEntry(const PortalResults& entry, RestoreDataVersion version) {
       switch (version) {
       case RestoreDataVersion::AppIdOnly:
-        // An intermediate build wrote identifiers into records still labelled AppIdOnly, so one
-        // may be present; it predates the guarantee, so prompt rather than trust it.
+        // v1 identified windows by app_id, which names an application, not a window; prompt.
         return std::nullopt;
 
       case RestoreDataVersion::Identifier: {
@@ -227,9 +222,16 @@ namespace xdpu {
     // Refused whole rather than narrowed: dropping a source the user chose is a
     // silent substitution, and which one got dropped would depend on entry order.
     std::vector<Session::Selection> resolveRestoreSelections(
-        const WaylandContext& wayland, const std::vector<Session::Selection>& restore, bool multiple
+        const WaylandContext& wayland, const std::vector<Session::Selection>& restore, bool multiple,
+        uint32_t sourceTypes
     ) {
       if (restore.empty() || (!multiple && restore.size() > 1)) {
+        return {};
+      }
+      // A source of a type the session did not request is refused like any unresolvable one.
+      if (std::ranges::any_of(restore, [&](const Session::Selection& stored) {
+            return (sourceTypes & static_cast<uint32_t>(stored.kind)) == 0;
+          })) {
         return {};
       }
 
@@ -307,65 +309,6 @@ namespace xdpu {
       return out.str();
     }
 
-    std::filesystem::path stateFilePath() {
-      if (const char* state = std::getenv("XDG_STATE_HOME"); state != nullptr && *state != '\0') {
-        return std::filesystem::path{state} / "xdg-desktop-portal-umbriel" / "restore.json";
-      }
-      if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
-        return std::filesystem::path{home} / ".local" / "state" / "xdg-desktop-portal-umbriel" / "restore.json";
-      }
-      return std::filesystem::path{"/tmp"} / "xdg-desktop-portal-umbriel-restore.json";
-    }
-
-    void savePersistentRestore(const std::string& token, const std::vector<Session::Selection>& selections) {
-      const std::filesystem::path path = stateFilePath();
-      std::error_code error;
-      std::filesystem::create_directories(path.parent_path(), error);
-      if (error) {
-        std::fprintf(
-            stderr, "screencast: unable to create state directory %s: %s\n", path.parent_path().c_str(),
-            error.message().c_str()
-        );
-        return;
-      }
-      (void)::chmod(path.parent_path().c_str(), 0700);
-
-      nlohmann::json root = nlohmann::json::object();
-      {
-        std::ifstream in(path);
-        if (in.good()) {
-          try {
-            in >> root;
-          } catch (const std::exception&) {
-            root = nlohmann::json::object();
-          }
-        }
-      }
-
-      nlohmann::json values = nlohmann::json::array();
-      for (const Session::Selection& selection : selections) {
-        nlohmann::json entry;
-        entry["kind"] = selection.kind == Session::SourceKind::Window ? "window" : "monitor";
-        entry["title"] = selection.title;
-        if (selection.kind == Session::SourceKind::Window) {
-          entry["app_id"] = selection.appId;
-          entry["identifier"] = selection.identifier;
-        } else {
-          entry["output"] = selection.output;
-        }
-        values.push_back(std::move(entry));
-      }
-      root[token] = std::move(values);
-
-      std::ofstream out(path, std::ios::trunc);
-      if (!out.good()) {
-        std::fprintf(stderr, "screencast: unable to write %s\n", path.c_str());
-        return;
-      }
-      out << root.dump(2) << '\n';
-      (void)::chmod(path.c_str(), 0600);
-    }
-
   } // namespace
 
   struct ScreenCastPortal::Impl {
@@ -383,7 +326,6 @@ namespace xdpu {
     WaylandContext& wayland;
     PipeWireContext& pipewire;
     std::map<std::string, std::shared_ptr<Session>> sessions;
-    std::map<std::string, std::vector<Session::Selection>> memoryRestores;
 
     Impl(
         Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, const Config& config,
@@ -496,8 +438,9 @@ namespace xdpu {
 
       void start(const std::string& handle) {
         attachRequest(handle);
-        const auto restored =
-            resolveRestoreSelections(portal.wayland, session->restoreSelections(), session->multiple());
+        const auto restored = resolveRestoreSelections(
+            portal.wayland, session->restoreSelections(), session->multiple(), session->sourceTypes()
+        );
         if (!restored.empty()) {
           startCaptures(restored);
           return;
@@ -775,11 +718,6 @@ namespace xdpu {
           const std::string token = makeUuid();
           results.emplace("persist_mode", sdbus::Variant{session->persistMode()});
           results.emplace("restore_data", session->restoreDataVariant(token));
-          if (session->persistMode() == 1) {
-            portal.memoryRestores[token] = session->selections();
-          } else if (session->persistMode() == 2) {
-            savePersistentRestore(token, session->selections());
-          }
         }
 
         return results;
