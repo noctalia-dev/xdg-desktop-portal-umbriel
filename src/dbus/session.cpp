@@ -4,10 +4,8 @@
 #include "pipewire/pipewire.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstdio>
-#include <memory>
 #include <pipewire/stream.h>
 #include <sdbus-c++/sdbus-c++.h>
 #include <spa/buffer/buffer.h>
@@ -20,10 +18,6 @@ namespace xdpu {
 
     constexpr char kSessionInterface[] = "org.freedesktop.impl.portal.Session";
     constexpr uint64_t kNsecPerSec = 1000000000ull;
-    // Two capture sessions per source keep a copy request pending at every
-    // compositor frame boundary; ext_image_copy_capture_v1 allows at most one
-    // live frame per session, so the sessions hand off instead of pipelining.
-    constexpr int kCaptureSlots = 2;
 
     uint32_t sourceType(Session::SourceKind kind) { return kind == Session::SourceKind::Window ? 2u : 1u; }
 
@@ -38,7 +32,6 @@ namespace xdpu {
       Loop* loop = nullptr;
       WaylandContext* wayland = nullptr;
       std::unique_ptr<WaylandContext::CaptureSession> capture;
-      std::unique_ptr<WaylandContext::CaptureSession> twinCapture;
       std::unique_ptr<PipeWireStream> stream;
       CaptureConstraints constraints;
       Selection selection;
@@ -46,18 +39,16 @@ namespace xdpu {
       uint32_t maxFps = 0;
       int fpsTimer = 0;
       bool stopped = false;
-      int framesInFlight = 0;
+      bool frameInFlight = false;
       bool constraintsDirty = false;
       bool waitingForConstraints = false;
       bool reconfiguring = false;
       CaptureConstraints reconfigureTarget;
-      std::array<std::unique_ptr<WaylandContext::CaptureFrame>, kCaptureSlots> pendingFrame;
+      std::unique_ptr<WaylandContext::CaptureFrame> pendingFrame;
       uint64_t sequence = 0;
       std::chrono::steady_clock::time_point lastFrame{};
 
       ~StreamState() { stop(); }
-
-      int maxInFlight() const { return twinCapture ? kCaptureSlots : 1; }
 
       StreamResult result() const {
         StreamResult value;
@@ -81,18 +72,16 @@ namespace xdpu {
           fpsTimer = 0;
           loop->removeTimer(timer);
         }
-        // Destroy the pending frames first — their proxies must be gone before
-        // the capture session or stream buffers they reference.
-        for (auto& frame : pendingFrame) {
-          frame.reset();
-        }
+        // Destroy the pending frame first — its proxy must be gone before
+        // the capture session or stream buffers it references.
+        pendingFrame.reset();
         if (stream) {
           stream->onProcessRequest = nullptr;
           stream->onAddBuffer = nullptr;
           stream->onRemoveBuffer = nullptr;
           stream->disconnect();
         }
-        framesInFlight = 0;
+        frameInFlight = false;
       }
 
       void captureStopped() {
@@ -104,18 +93,6 @@ namespace xdpu {
           auto handler = std::move(backendClosedHandler);
           handler();
         }
-      }
-
-      // The twin only paces frames; losing it degrades to single-session
-      // pacing instead of ending the stream.  With a frame still live on it,
-      // frameFailed finishes the teardown once that frame settles.
-      void twinStopped() {
-        if (stopped || !twinCapture || pendingFrame[1] != nullptr) {
-          return;
-        }
-        twinCapture.reset();
-        std::fprintf(stderr, "session: twin capture stopped early, single-session pacing\n");
-        processRequest();
       }
 
       void scheduleProcess(int delayMs) {
@@ -132,16 +109,13 @@ namespace xdpu {
       }
 
       void processRequest() {
-        if (stopped || !stream || !stream->connected() || waitingForConstraints || reconfiguring) {
+        if (stopped || !stream || !stream->connected() || frameInFlight || waitingForConstraints || reconfiguring) {
           return;
         }
         if (constraintsDirty) {
-          // reconfigureStream() no-ops while frames are in flight; the last
-          // frameReady re-enters here once they drain.
+          // No frame is in flight (guard above), so the pending constraints
+          // can be applied immediately
           reconfigureStream();
-          return;
-        }
-        if (framesInFlight >= maxInFlight()) {
           return;
         }
 
@@ -172,13 +146,13 @@ namespace xdpu {
         }
         constraints = newConstraints;
         constraintsDirty = true;
-        if (framesInFlight == 0 && !reconfiguring) {
+        if (!frameInFlight && !reconfiguring) {
           reconfigureStream();
         }
       }
 
       void reconfigureStream() {
-        if (stopped || !stream || framesInFlight > 0 || reconfiguring || !constraintsDirty) {
+        if (stopped || !stream || frameInFlight || reconfiguring || !constraintsDirty) {
           return;
         }
 
@@ -212,21 +186,8 @@ namespace xdpu {
         }
       }
 
-      [[nodiscard]] int freeSlots() const {
-        for (int slot = 0; slot < maxInFlight(); ++slot) {
-          if (pendingFrame[slot] == nullptr) {
-            return slot;
-          }
-        }
-        return -1;
-      }
-
       void requestFrame() {
-        if (stopped || !stream || !stream->connected() || !capture || wayland == nullptr) {
-          return;
-        }
-        const int slot = freeSlots();
-        if (slot < 0) {
+        if (stopped || !stream || !stream->connected() || !capture || wayland == nullptr || frameInFlight) {
           return;
         }
 
@@ -243,32 +204,31 @@ namespace xdpu {
           return;
         }
 
-        WaylandContext::CaptureSession& source = slot == 1 && twinCapture ? *twinCapture : *capture;
-        ++framesInFlight;
+        frameInFlight = true;
         std::weak_ptr<StreamState> weak = shared_from_this();
-        auto frame = wayland->captureFrame(
-            source, captureBuffer->wlBuffer,
-            [weak, slot, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
+        pendingFrame = wayland->captureFrame(
+            *capture, captureBuffer->wlBuffer,
+            [weak, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
               if (auto self = weak.lock()) {
-                self->frameReady(slot, pwBuffer, sec, nsec);
+                self->frameReady(pwBuffer, sec, nsec);
               }
             },
-            [weak, slot, pwBuffer](CaptureFailureReason reason) {
+            [weak, pwBuffer](CaptureFailureReason reason) {
               if (auto self = weak.lock()) {
-                self->frameFailed(slot, pwBuffer, reason);
+                self->frameFailed(pwBuffer, reason);
               }
             }
         );
-        // A synchronous failure has already run frameFailed, which balanced
-        // framesInFlight; only take ownership of a real frame.
-        if (frame) {
-          pendingFrame[slot] = std::move(frame);
+        // A synchronous failure has already run frameFailed, which cleared
+        // frameInFlight and requeued the buffer; only a real frame is owned.
+        if (!pendingFrame) {
+          return;
         }
       }
 
-      void frameReady(int slot, pw_buffer* pwBuffer, uint64_t sec, uint32_t nsec) {
-        pendingFrame[slot].reset(); // frame proxy already destroyed by the callback
-        --framesInFlight;
+      void frameReady(pw_buffer* pwBuffer, uint64_t sec, uint32_t nsec) {
+        pendingFrame.reset(); // frame proxy already destroyed by the callback
+        frameInFlight = false;
         // A stop can race with the Wayland ready event.  Never return a
         // buffer to a PipeWire stream after it has been disconnected.
         if (stopped || !stream || !stream->connected() || !stream->ownsBuffer(pwBuffer)) {
@@ -286,7 +246,7 @@ namespace xdpu {
             header->dts_offset = 0;
             header->seq = ++sequence;
           }
-          stream->setCursorMetadata(pwBuffer, capture->cursorMetadata()); // twin never has a cursor stack
+          stream->setCursorMetadata(pwBuffer, capture->cursorMetadata());
         }
 
         lastFrame = std::chrono::steady_clock::now();
@@ -294,18 +254,14 @@ namespace xdpu {
         processRequest();
       }
 
-      void frameFailed(int slot, pw_buffer* pwBuffer, CaptureFailureReason reason) {
-        pendingFrame[slot].reset(); // frame proxy already destroyed by the callback
-        --framesInFlight;
+      void frameFailed(pw_buffer* pwBuffer, CaptureFailureReason reason) {
+        pendingFrame.reset(); // frame proxy already destroyed by the callback
+        frameInFlight = false;
         if (!stopped && stream && stream->connected() && stream->ownsBuffer(pwBuffer)) {
           stream->queueBuffer(pwBuffer);
         }
         if (reason == CaptureFailureReason::Stopped) {
-          if (slot == 1 && twinCapture) {
-            twinStopped();
-          } else {
-            captureStopped();
-          }
+          captureStopped();
         } else if (reason == CaptureFailureReason::ConstraintsChanged) {
           if (constraintsDirty) {
             reconfigureStream();
@@ -409,8 +365,8 @@ namespace xdpu {
 
   bool Session::addStream(
       Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
-      CaptureCursorMode cursorMode, std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints,
-      const Selection& selection, uint32_t maxFps, ClosedHandler backendClosedHandler
+      std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints, const Selection& selection,
+      uint32_t maxFps, ClosedHandler backendClosedHandler
   ) {
     if (!capture || !stream || capture->stopped) {
       return false;
@@ -426,45 +382,17 @@ namespace xdpu {
     state->maxFps = maxFps;
     state->backendClosedHandler = std::move(backendClosedHandler);
 
-    // A second session keeps a copy request pending at every frame boundary
-    // (see kCaptureSlots).  It never carries a cursor stack — two stacks
-    // doubled the sprite captures per cursor event and froze the cursor —
-    // so it just matches the primary's painted-cursor state.  Its
-    // constraints still reach constraintsChanged; the primary shapes the
-    // stream.
-    const bool paintsCursors = cursorMode != CaptureCursorMode::Hidden && !state->capture->hasCursorMetadata();
-    const CaptureCursorMode twinCursorMode = paintsCursors ? CaptureCursorMode::Embedded : CaptureCursorMode::Hidden;
-    if (selection.kind == Session::SourceKind::Monitor) {
-      state->twinCapture = wayland.createOutputCapture(selection.output, twinCursorMode, nullptr);
-    } else {
-      state->twinCapture = wayland.createToplevelCapture(selection.identifier, twinCursorMode, nullptr);
-    }
-    if (!state->twinCapture || state->twinCapture->stopped) {
-      state->twinCapture.reset();
-      std::fprintf(stderr, "session: twin capture unavailable, single-session pacing\n");
-    }
-
     std::weak_ptr<Impl::StreamState> weak = state;
-    for (auto* session : {&state->capture, &state->twinCapture}) {
-      if (*session == nullptr) {
-        continue;
+    state->capture->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
+      if (auto streamState = weak.lock()) {
+        streamState->constraintsChanged(newConstraints);
       }
-      const bool isTwin = session == &state->twinCapture;
-      (*session)->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
-        if (auto streamState = weak.lock()) {
-          streamState->constraintsChanged(newConstraints);
-        }
-      };
-      (*session)->stoppedCb = [weak, isTwin]() {
-        if (auto streamState = weak.lock()) {
-          if (isTwin) {
-            streamState->twinStopped();
-          } else {
-            streamState->captureStopped();
-          }
-        }
-      };
-    }
+    };
+    state->capture->stoppedCb = [weak]() {
+      if (auto streamState = weak.lock()) {
+        streamState->captureStopped();
+      }
+    };
     state->stream->onProcessRequest = [weak]() {
       if (auto streamState = weak.lock()) {
         streamState->processRequest();

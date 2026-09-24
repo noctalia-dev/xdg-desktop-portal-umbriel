@@ -14,7 +14,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <random>
@@ -446,7 +445,6 @@ namespace xdpu {
       std::vector<PendingCapture> pending;
       int timeoutTimer = 0;
       bool done = false;
-      CaptureCursorMode cursorMode = CaptureCursorMode::Hidden;
 
       StartOperation(Impl& portal, PortalResponse&& result, std::shared_ptr<Session> session)
           : portal(portal), result(std::move(result)), session(std::move(session)) {}
@@ -567,14 +565,6 @@ namespace xdpu {
         startCaptures({selectionForOutput(outputs.front())});
       }
 
-      std::unique_ptr<WaylandContext::CaptureSession>
-      createCapture(const Session::Selection& selection, CaptureCursorMode mode, ConstraintsCallback callback) {
-        if (selection.kind == Session::SourceKind::Monitor) {
-          return portal.wayland.createOutputCapture(selection.output, mode, std::move(callback));
-        }
-        return portal.wayland.createToplevelCapture(selection.identifier, mode, std::move(callback));
-      }
-
       void startCaptures(std::vector<Session::Selection> selections) {
         if (selections.empty()) {
           finish(1, {});
@@ -589,7 +579,7 @@ namespace xdpu {
         pending.reserve(selections.size());
         auto self = shared_from_this();
         std::weak_ptr<StartOperation> weakSelf = self;
-        cursorMode = CaptureCursorMode::Hidden;
+        CaptureCursorMode cursorMode = CaptureCursorMode::Hidden;
         if (session->cursorMode() == kCursorEmbedded) {
           cursorMode = CaptureCursorMode::Embedded;
         } else if (session->cursorMode() == kCursorMetadata) {
@@ -612,7 +602,13 @@ namespace xdpu {
             self->constraintsReady(index, constraints);
           };
 
-          pending[index].capture = createCapture(selection, cursorMode, std::move(callback));
+          if (selection.kind == Session::SourceKind::Monitor) {
+            pending[index].capture =
+                portal.wayland.createOutputCapture(selection.output, cursorMode, std::move(callback));
+          } else {
+            pending[index].capture =
+                portal.wayland.createToplevelCapture(selection.identifier, cursorMode, std::move(callback));
+          }
 
           if (!pending[index].capture) {
             std::fprintf(
@@ -693,7 +689,7 @@ namespace xdpu {
           const std::string sessionPath = session->path();
           Impl* portalPtr = &portal;
           if (!session->addStream(
-                  portal.loop, portal.wayland, std::move(item.capture), cursorMode, std::move(stream), item.constraints,
+                  portal.loop, portal.wayland, std::move(item.capture), std::move(stream), item.constraints,
                   item.selection, static_cast<uint32_t>(std::max(0, portal.config.screencast.maxFps)),
                   [portalPtr, sessionPath]() {
                     const auto it = portalPtr->sessions.find(sessionPath);

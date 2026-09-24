@@ -70,8 +70,8 @@ namespace xdpu {
 
     bool addStream(
         Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
-        CaptureCursorMode cursorMode, std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints,
-        const Selection& selection, uint32_t maxFps, ClosedHandler backendClosedHandler
+        std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints, const Selection& selection,
+        uint32_t maxFps, ClosedHandler backendClosedHandler
     );
     std::vector<StreamResult> streamResults() const;
 

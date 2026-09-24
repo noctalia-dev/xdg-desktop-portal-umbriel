@@ -679,11 +679,10 @@ namespace xdpu {
       metadata.pixels.resize(cursor.mapSize);
       std::memcpy(metadata.pixels.data(), cursor.mapping, cursor.mapSize);
 
-      const bool requestAgain = cursor.requestPending;
-      cursor.requestPending = false;
-      if (requestAgain) {
-        requestCursorFrame(cursor);
-      }
+      // Always keep exactly one cursor frame pending so cursor shape changes
+      // are captured even when the pointer is still (I-beam, busy spinner,
+      // animated cursors). requestCursorFrame coalesces through requestPending.
+      requestCursorFrame(cursor);
     }
 
     void cursorFrameFailed(WaylandContext::CursorCapture& cursor, CaptureFailureReason reason) {
