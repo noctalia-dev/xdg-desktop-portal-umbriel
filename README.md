@@ -96,7 +96,7 @@ color_pick_cmd = ""
 
 ## Screencast cursor modes
 
-Applications can request hidden, embedded, or metadata cursors for a screencast. Metadata cursors are published through PipeWire when version 1.4.8 or newer is available. Older PipeWire versions, or Wayland sessions without a pointer, use an embedded cursor instead.
+Applications can request hidden, embedded, or metadata cursors for a screencast. Metadata cursors are published through PipeWire when version 1.4.8 or newer is available. If cursor metadata is unavailable, the cursor remains hidden so that a metadata request never burns it into the captured pixels.
 
 ## License
 

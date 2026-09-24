@@ -575,8 +575,10 @@ namespace xdpu {
           if (portal.pipewire.supportsCursorMetadata()) {
             cursorMode = CaptureCursorMode::Metadata;
           } else {
-            std::fprintf(stderr, "screencast: PipeWire 1.4.8 is required for cursor metadata; embedding cursor\n");
-            cursorMode = CaptureCursorMode::Embedded;
+            // Do not silently burn the cursor into the image when the caller
+            // requested a separate metadata stream.  Hidden is the only
+            // degradation that keeps the captured pixels cursor-free.
+            std::fprintf(stderr, "screencast: PipeWire 1.4.8 is required for cursor metadata; hiding cursor\n");
           }
         }
 

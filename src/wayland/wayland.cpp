@@ -619,9 +619,17 @@ namespace xdpu {
 
     bool configureCursorBuffer(WaylandContext::CursorCapture& cursor, const CaptureConstraints& constraints) {
       resetCursorBuffer(cursor);
+      // wlroots cursor sources may initially have no buffer constraints (for
+      // example, before the first hardware-cursor buffer exists).  A later
+      // constraints update will call us again, so this is not a negotiation
+      // failure and must not be treated as one.
+      if (constraints.shmFormats.empty() || constraints.bufferWidth == 0 || constraints.bufferHeight == 0) {
+        return false;
+      }
+
       const uint32_t format = preferredCursorFormat(constraints.shmFormats);
-      if (format == 0 || constraints.bufferWidth == 0 || constraints.bufferHeight == 0) {
-        std::fprintf(stderr, "wayland: cursor capture has no supported SHM format\n");
+      if (format == 0) {
+        std::fprintf(stderr, "wayland: cursor capture has no supported 32-bit SHM format\n");
         return false;
       }
 
@@ -990,9 +998,8 @@ namespace xdpu {
         return nullptr;
       }
 
-      const bool metadata = cursorMode == CaptureCursorMode::Metadata && impl.pointer != nullptr;
-      const bool paintCursors =
-          cursorMode == CaptureCursorMode::Embedded || (cursorMode == CaptureCursorMode::Metadata && !metadata);
+      const bool metadata = cursorMode == CaptureCursorMode::Metadata;
+      const bool paintCursors = cursorMode == CaptureCursorMode::Embedded;
       const uint32_t options = paintCursors ? EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS : 0;
       auto* session = ext_image_copy_capture_manager_v1_create_session(impl.captureManager, source, options);
       if (session == nullptr) {
@@ -1003,18 +1010,12 @@ namespace xdpu {
       auto capture = std::make_unique<WaylandContext::CaptureSession>(impl, source, session, std::move(constraintsCb));
       ext_image_copy_capture_session_v1_add_listener(session, &kSessionListener, capture.get());
       if (metadata && !setupCursorCapture(*capture)) {
-        ConstraintsCallback callback = std::move(capture->constraintsCb);
-        capture->source = nullptr;
-        capture.reset();
-        session = ext_image_copy_capture_manager_v1_create_session(
-            impl.captureManager, source, EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS
-        );
-        if (session == nullptr) {
-          ext_image_capture_source_v1_destroy(source);
-          return nullptr;
-        }
-        capture = std::make_unique<WaylandContext::CaptureSession>(impl, source, session, std::move(callback));
-        ext_image_copy_capture_session_v1_add_listener(session, &kSessionListener, capture.get());
+        // A metadata request must never change the contents of the video
+        // frames.  If the seat has no pointer (or allocation failed), keep the
+        // original cursor-free session instead of recreating it with
+        // PAINT_CURSORS.  This degrades to a hidden cursor rather than
+        // irreversibly baking one into every frame.
+        std::fprintf(stderr, "wayland: cursor metadata capture is unavailable; hiding cursor\n");
       }
       impl.flushDisplay();
       return capture;
