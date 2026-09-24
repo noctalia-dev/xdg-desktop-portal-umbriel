@@ -158,8 +158,10 @@ namespace xdpu {
 
     // Returns an owning frame handle.  Destroy it to cancel a pending capture.
     // Callbacks fire at most once; after that the frame proxy is already destroyed.
+    // damageBuffer forces a full-buffer copy; false waits for new content.
     std::unique_ptr<CaptureFrame> captureFrame(
-        CaptureSession& session, struct wl_buffer* buffer, FrameReadyCallback onReady, FrameFailedCallback onFailed
+        CaptureSession& session, struct wl_buffer* buffer, bool damageBuffer, FrameReadyCallback onReady,
+        FrameFailedCallback onFailed
     );
     void requestCursorFrame(CaptureSession& session);
 

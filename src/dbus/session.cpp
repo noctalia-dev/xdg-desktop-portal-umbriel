@@ -187,7 +187,8 @@ namespace xdpu {
       }
 
       void requestFrame() {
-        if (stopped || !stream || !stream->connected() || !capture || wayland == nullptr || frameInFlight) {
+        // Capture only while a consumer is streaming (state callback restarts on STREAMING)
+        if (stopped || !stream || !stream->streaming() || !capture || wayland == nullptr || frameInFlight) {
           return;
         }
 
@@ -207,7 +208,7 @@ namespace xdpu {
         frameInFlight = true;
         std::weak_ptr<StreamState> weak = shared_from_this();
         pendingFrame = wayland->captureFrame(
-            *capture, captureBuffer->wlBuffer,
+            *capture, captureBuffer->wlBuffer, /*damageBuffer=*/true,
             [weak, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
               if (auto self = weak.lock()) {
                 self->frameReady(pwBuffer, sec, nsec);
