@@ -314,6 +314,7 @@ namespace xdpu {
     uint32_t stride = 0;
     bool requestPending = false;
     uint32_t consecutiveFailures = 0;
+    bool pendingDamage = true;
     CursorMetadata metadata;
   };
 
@@ -703,7 +704,7 @@ namespace xdpu {
         return;
       }
       ++cursor.consecutiveFailures;
-      requestCursorFrame(cursor, /*damage=*/false);
+      requestCursorFrame(cursor, cursor.pendingDamage);
     }
 
     void requestCursorFrame(WaylandContext::CursorCapture& cursor, bool damage) {
@@ -717,6 +718,7 @@ namespace xdpu {
       }
 
       cursor.requestPending = false;
+      cursor.pendingDamage = damage;
       cursor.pendingFrame = cursor.owner.impl.owner.captureFrame(
           *cursor.imageCapture, cursor.buffer, damage,
           [&cursor](CaptureBuffer&, uint64_t, uint32_t) { cursorFrameReady(cursor); },
