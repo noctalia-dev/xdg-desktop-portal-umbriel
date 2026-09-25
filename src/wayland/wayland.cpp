@@ -313,6 +313,8 @@ namespace xdpu {
     uint32_t format = 0;
     uint32_t stride = 0;
     bool requestPending = false;
+    uint32_t consecutiveFailures = 0;
+    bool pendingDamage = true;
     CursorMetadata metadata;
   };
 
@@ -615,7 +617,7 @@ namespace xdpu {
       cursor.stride = 0;
     }
 
-    void requestCursorFrame(WaylandContext::CursorCapture& cursor);
+    void requestCursorFrame(WaylandContext::CursorCapture& cursor, bool damage = true);
 
     bool configureCursorBuffer(WaylandContext::CursorCapture& cursor, const CaptureConstraints& constraints) {
       resetCursorBuffer(cursor);
@@ -687,12 +689,14 @@ namespace xdpu {
       metadata.pixels.resize(cursor.mapSize);
       std::memcpy(metadata.pixels.data(), cursor.mapping, cursor.mapSize);
 
-      const bool requestAgain = cursor.requestPending;
-      cursor.requestPending = false;
-      if (requestAgain) {
-        requestCursorFrame(cursor);
-      }
+      // Keep one damage-less frame pending: fires when the cursor image
+      // changes, without forcing output redraws like damaged frames do.
+      cursor.consecutiveFailures = 0;
+      requestCursorFrame(cursor, /*damage=*/false);
     }
+
+    // Retry transient failures briefly, then wait for the next pointer event.
+    constexpr uint32_t kMaxCursorRetries = 3;
 
     void cursorFrameFailed(WaylandContext::CursorCapture& cursor, CaptureFailureReason reason) {
       cursor.pendingFrame.reset();
@@ -704,13 +708,14 @@ namespace xdpu {
         configureCursorBuffer(cursor, cursor.imageCapture->constraints);
         return;
       }
-      if (cursor.requestPending) {
-        cursor.requestPending = false;
-        requestCursorFrame(cursor);
+      if (cursor.consecutiveFailures >= kMaxCursorRetries) {
+        return;
       }
+      ++cursor.consecutiveFailures;
+      requestCursorFrame(cursor, cursor.pendingDamage);
     }
 
-    void requestCursorFrame(WaylandContext::CursorCapture& cursor) {
+    void requestCursorFrame(WaylandContext::CursorCapture& cursor, bool damage) {
       if (cursor.imageCapture == nullptr || cursor.imageCapture->stopped || cursor.buffer == nullptr) {
         cursor.requestPending = true;
         return;
@@ -721,8 +726,9 @@ namespace xdpu {
       }
 
       cursor.requestPending = false;
+      cursor.pendingDamage = damage;
       cursor.pendingFrame = cursor.owner.impl.owner.captureFrame(
-          *cursor.imageCapture, cursor.buffer,
+          *cursor.imageCapture, cursor.buffer, damage,
           [&cursor](CaptureBuffer&, uint64_t, uint32_t) { cursorFrameReady(cursor); },
           [&cursor](CaptureFailureReason reason) { cursorFrameFailed(cursor, reason); }
       );
@@ -1141,7 +1147,8 @@ namespace xdpu {
   }
 
   std::unique_ptr<WaylandContext::CaptureFrame> WaylandContext::captureFrame(
-      CaptureSession& session, wl_buffer* buffer, FrameReadyCallback onReady, FrameFailedCallback onFailed
+      CaptureSession& session, wl_buffer* buffer, bool damageBuffer, FrameReadyCallback onReady,
+      FrameFailedCallback onFailed
   ) {
     if (session.session == nullptr || session.stopped) {
       if (onFailed) {
@@ -1174,10 +1181,12 @@ namespace xdpu {
 
     ext_image_copy_capture_frame_v1_add_listener(frame, &kFrameListener, state.get());
     ext_image_copy_capture_frame_v1_attach_buffer(frame, buffer);
-    ext_image_copy_capture_frame_v1_damage_buffer(
-        frame, 0, 0, static_cast<int32_t>(session.constraints.bufferWidth),
-        static_cast<int32_t>(session.constraints.bufferHeight)
-    );
+    if (damageBuffer) {
+      ext_image_copy_capture_frame_v1_damage_buffer(
+          frame, 0, 0, static_cast<int32_t>(session.constraints.bufferWidth),
+          static_cast<int32_t>(session.constraints.bufferHeight)
+      );
+    }
     ext_image_copy_capture_frame_v1_capture(frame);
     m_impl->flushDisplay();
     return state;

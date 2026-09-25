@@ -892,6 +892,14 @@ namespace xdpu {
     return state == PW_STREAM_STATE_PAUSED || state == PW_STREAM_STATE_STREAMING;
   }
 
+  bool PipeWireStream::streaming() const {
+    if (m_impl->stream == nullptr) {
+      return false;
+    }
+    const char* error = nullptr;
+    return pw_stream_get_state(m_impl->stream, &error) == PW_STREAM_STATE_STREAMING;
+  }
+
   void PipeWireStream::triggerProcess() {
     if (m_impl->stream != nullptr) {
       pw_stream_trigger_process(m_impl->stream);

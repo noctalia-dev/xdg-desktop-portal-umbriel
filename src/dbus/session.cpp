@@ -112,6 +112,12 @@ namespace xdpu {
         if (stopped || !stream || !stream->connected() || frameInFlight || waitingForConstraints || reconfiguring) {
           return;
         }
+        if (constraintsDirty) {
+          // No frame is in flight (guard above), so the pending constraints
+          // can be applied immediately
+          reconfigureStream();
+          return;
+        }
 
         if (maxFps > 0) {
           const auto now = std::chrono::steady_clock::now();
@@ -131,9 +137,15 @@ namespace xdpu {
         if (stopped) {
           return;
         }
+        // Every done event settles a pending constraints-wait — dropping a
+        // redundant one here would leave the stream waiting forever.
+        waitingForConstraints = false;
+        if (newConstraints == constraints) {
+          scheduleProcess(1);
+          return;
+        }
         constraints = newConstraints;
         constraintsDirty = true;
-        waitingForConstraints = false;
         if (!frameInFlight && !reconfiguring) {
           reconfigureStream();
         }
@@ -175,7 +187,8 @@ namespace xdpu {
       }
 
       void requestFrame() {
-        if (stopped || !stream || !stream->connected() || !capture || wayland == nullptr || frameInFlight) {
+        // Capture only while a consumer is streaming (state callback restarts on STREAMING)
+        if (stopped || !stream || !stream->streaming() || !capture || wayland == nullptr || frameInFlight) {
           return;
         }
 
@@ -192,12 +205,10 @@ namespace xdpu {
           return;
         }
 
-        wayland->requestCursorFrame(*capture);
-
         frameInFlight = true;
         std::weak_ptr<StreamState> weak = shared_from_this();
         pendingFrame = wayland->captureFrame(
-            *capture, captureBuffer->wlBuffer,
+            *capture, captureBuffer->wlBuffer, /*damageBuffer=*/true,
             [weak, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
               if (auto self = weak.lock()) {
                 self->frameReady(pwBuffer, sec, nsec);
@@ -209,8 +220,9 @@ namespace xdpu {
               }
             }
         );
+        // A synchronous failure has already run frameFailed, which cleared
+        // frameInFlight and requeued the buffer; only a real frame is owned.
         if (!pendingFrame) {
-          // captureFrame invoked onFailed synchronously.
           return;
         }
       }

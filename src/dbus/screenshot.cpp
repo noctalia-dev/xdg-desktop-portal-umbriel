@@ -479,7 +479,7 @@ namespace xdpu {
         std::weak_ptr<Operation> weakSelf = shared_from_this();
 
         cap.frame = portal.wayland.captureFrame(
-            *cap.session, cap.buffer,
+            *cap.session, cap.buffer, /*damageBuffer=*/true,
             /*onReady=*/
             [weakSelf, format, stride,
              onComplete = std::move(onComplete)](CaptureBuffer& /*buf*/, uint64_t /*ptsSec*/, uint32_t /*ptsNsec*/) {
