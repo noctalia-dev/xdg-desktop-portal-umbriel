@@ -53,6 +53,8 @@ namespace xdpu {
     bool setActive(bool active);
     void disconnect();
     bool connected() const;
+    // Unlike connected(), false while PAUSED (no user pulling frames).
+    [[nodiscard]] bool streaming() const;
     void triggerProcess();
 
     CaptureBuffer* captureBuffer(struct pw_buffer* buffer) const;

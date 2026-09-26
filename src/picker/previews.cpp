@@ -169,7 +169,7 @@ namespace xdpu {
         capture.buffer =
             wayland.createShmBuffer(info.bufferWidth, info.bufferHeight, format, stride, capture.fd, capture.size);
         capture.frame = wayland.captureFrame(
-            *capture.session, capture.buffer,
+            *capture.session, capture.buffer, /*damageBuffer=*/true,
             [&, width = info.bufferWidth, height = info.bufferHeight,
              format](CaptureBuffer& buffer, uint64_t, uint32_t) {
               result = thumbnail(capture, width, height, format, buffer.transform);
