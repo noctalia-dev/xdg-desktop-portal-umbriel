@@ -876,6 +876,18 @@ namespace xdpu {
     return true;
   }
 
+  bool PipeWireStream::setActive(bool active) {
+    if (m_impl->stream == nullptr) {
+      return false;
+    }
+    const int rc = pw_stream_set_active(m_impl->stream, active);
+    if (rc < 0) {
+      std::fprintf(stderr, "pipewire: unable to change stream activity: %s\n", spa_strerror(rc));
+      return false;
+    }
+    return true;
+  }
+
   void PipeWireStream::disconnect() {
     if (m_impl->stream != nullptr) {
       pw_stream_disconnect(m_impl->stream);

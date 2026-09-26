@@ -19,10 +19,16 @@ namespace xdpu {
     constexpr char kSessionInterface[] = "org.freedesktop.impl.portal.Session";
     constexpr uint64_t kNsecPerSec = 1000000000ull;
 
-    uint32_t sourceType(Session::SourceKind kind) { return kind == Session::SourceKind::Window ? 2u : 1u; }
+    uint32_t sourceType(Session::SourceKind kind) { return kind == Session::SourceKind::Monitor ? 1u : 2u; }
 
     std::string kindName(Session::SourceKind kind) {
-      return kind == Session::SourceKind::Window ? "window" : "monitor";
+      switch (kind) {
+      case Session::SourceKind::Monitor:
+        return "monitor";
+      case Session::SourceKind::Window:
+        return "window";
+      }
+      return "window";
     }
 
   } // namespace
@@ -37,18 +43,30 @@ namespace xdpu {
       Selection selection;
       ClosedHandler backendClosedHandler;
       uint32_t maxFps = 0;
+      CaptureCursorMode cursorMode = CaptureCursorMode::Hidden;
       int fpsTimer = 0;
       bool stopped = false;
+      DynamicMode dynamicMode = DynamicMode::Static;
       bool frameInFlight = false;
       bool constraintsDirty = false;
       bool waitingForConstraints = false;
       bool reconfiguring = false;
       CaptureConstraints reconfigureTarget;
       std::unique_ptr<WaylandContext::CaptureFrame> pendingFrame;
+      pw_buffer* inFlightBuffer = nullptr;
       uint64_t sequence = 0;
       std::chrono::steady_clock::time_point lastFrame{};
 
       ~StreamState() { stop(); }
+
+      void cancelFrame() {
+        pendingFrame.reset();
+        frameInFlight = false;
+        if (inFlightBuffer != nullptr && stream && stream->connected() && stream->ownsBuffer(inFlightBuffer)) {
+          stream->queueBuffer(inFlightBuffer);
+        }
+        inFlightBuffer = nullptr;
+      }
 
       StreamResult result() const {
         StreamResult value;
@@ -72,9 +90,9 @@ namespace xdpu {
           fpsTimer = 0;
           loop->removeTimer(timer);
         }
-        // Destroy the pending frame first — its proxy must be gone before
+        // Destroy the pending frame first because its proxy must be gone before
         // the capture session or stream buffers it references.
-        pendingFrame.reset();
+        cancelFrame();
         if (stream) {
           stream->onProcessRequest = nullptr;
           stream->onAddBuffer = nullptr;
@@ -86,6 +104,15 @@ namespace xdpu {
 
       void captureStopped() {
         if (stopped) {
+          return;
+        }
+        if (dynamicMode != DynamicMode::Static) {
+          cancelFrame();
+          waitingForConstraints = false;
+          constraintsDirty = false;
+          if (stream) {
+            stream->setActive(false);
+          }
           return;
         }
         stop();
@@ -195,6 +222,7 @@ namespace xdpu {
         wayland->requestCursorFrame(*capture);
 
         frameInFlight = true;
+        inFlightBuffer = pwBuffer;
         std::weak_ptr<StreamState> weak = shared_from_this();
         pendingFrame = wayland->captureFrame(
             *capture, captureBuffer->wlBuffer,
@@ -218,6 +246,7 @@ namespace xdpu {
       void frameReady(pw_buffer* pwBuffer, uint64_t sec, uint32_t nsec) {
         pendingFrame.reset(); // frame proxy already destroyed by the callback
         frameInFlight = false;
+        inFlightBuffer = nullptr;
         // A stop can race with the Wayland ready event.  Never return a
         // buffer to a PipeWire stream after it has been disconnected.
         if (stopped || !stream || !stream->connected() || !stream->ownsBuffer(pwBuffer)) {
@@ -246,6 +275,7 @@ namespace xdpu {
       void frameFailed(pw_buffer* pwBuffer, CaptureFailureReason reason) {
         pendingFrame.reset(); // frame proxy already destroyed by the callback
         frameInFlight = false;
+        inFlightBuffer = nullptr;
         if (!stopped && stream && stream->connected() && stream->ownsBuffer(pwBuffer)) {
           stream->queueBuffer(pwBuffer);
         }
@@ -261,10 +291,67 @@ namespace xdpu {
           processRequest();
         }
       }
+
+      void attachCaptureCallbacks() {
+        if (!capture) {
+          return;
+        }
+        std::weak_ptr<StreamState> weak = shared_from_this();
+        capture->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
+          if (auto state = weak.lock()) {
+            state->constraintsChanged(newConstraints);
+          }
+        };
+        capture->stoppedCb = [weak]() {
+          if (auto state = weak.lock()) {
+            state->captureStopped();
+          }
+        };
+      }
+
+      void setDynamicTarget(const std::optional<Selection>& target) {
+        if (dynamicMode == DynamicMode::Static || stopped) {
+          return;
+        }
+        cancelFrame();
+        capture.reset();
+        waitingForConstraints = false;
+        constraintsDirty = false;
+
+        if (!target) {
+          if (stream) {
+            stream->setActive(false);
+          }
+          return;
+        }
+
+        std::weak_ptr<StreamState> weak = shared_from_this();
+        ConstraintsCallback callback = [weak](const CaptureConstraints& newConstraints) {
+          if (auto state = weak.lock()) {
+            state->constraintsChanged(newConstraints);
+          }
+        };
+        capture = target->kind == SourceKind::Monitor
+            ? wayland->createOutputCapture(target->output, cursorMode, std::move(callback))
+            : wayland->createToplevelCapture(target->identifier, cursorMode, std::move(callback));
+        if (!capture) {
+          if (stream) {
+            stream->setActive(false);
+          }
+          return;
+        }
+        selection = *target;
+        waitingForConstraints = true;
+        attachCaptureCallbacks();
+        if (stream) {
+          stream->setActive(true);
+        }
+      }
     };
 
     std::unique_ptr<sdbus::IObject> object;
     std::string path;
+    std::string appId;
     ClosedHandler closedHandler;
     bool isClosed = false;
     uint32_t selectedSourceTypes = 1;
@@ -275,8 +362,8 @@ namespace xdpu {
     std::vector<Selection> currentSelections;
     std::vector<std::shared_ptr<StreamState>> streams;
 
-    Impl(sdbus::IConnection& connection, std::string path, ClosedHandler closedHandler)
-        : path(std::move(path)), closedHandler(std::move(closedHandler)) {
+    Impl(sdbus::IConnection& connection, std::string path, std::string appId, ClosedHandler closedHandler)
+        : path(std::move(path)), appId(std::move(appId)), closedHandler(std::move(closedHandler)) {
       object = sdbus::createObject(connection, sdbus::ObjectPath{this->path});
       object
           ->addVTable(
@@ -318,12 +405,14 @@ namespace xdpu {
     }
   };
 
-  Session::Session(sdbus::IConnection& connection, std::string path, ClosedHandler closedHandler)
-      : m_impl(std::make_unique<Impl>(connection, std::move(path), std::move(closedHandler))) {}
+  Session::Session(sdbus::IConnection& connection, std::string path, std::string appId, ClosedHandler closedHandler)
+      : m_impl(std::make_unique<Impl>(connection, std::move(path), std::move(appId), std::move(closedHandler))) {}
 
   Session::~Session() = default;
 
   const std::string& Session::path() const { return m_impl->path; }
+
+  const std::string& Session::appId() const { return m_impl->appId; }
 
   bool Session::closed() const { return m_impl->isClosed; }
 
@@ -355,7 +444,7 @@ namespace xdpu {
   bool Session::addStream(
       Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
       std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints, const Selection& selection,
-      uint32_t maxFps, ClosedHandler backendClosedHandler
+      CaptureCursorMode cursorMode, uint32_t maxFps, DynamicMode dynamicMode, ClosedHandler backendClosedHandler
   ) {
     if (!capture || !stream || capture->stopped) {
       return false;
@@ -368,20 +457,13 @@ namespace xdpu {
     state->stream = std::move(stream);
     state->constraints = constraints;
     state->selection = selection;
+    state->cursorMode = cursorMode;
     state->maxFps = maxFps;
+    state->dynamicMode = dynamicMode;
     state->backendClosedHandler = std::move(backendClosedHandler);
 
     std::weak_ptr<Impl::StreamState> weak = state;
-    state->capture->constraintsCb = [weak](const CaptureConstraints& newConstraints) {
-      if (auto streamState = weak.lock()) {
-        streamState->constraintsChanged(newConstraints);
-      }
-    };
-    state->capture->stoppedCb = [weak]() {
-      if (auto streamState = weak.lock()) {
-        streamState->captureStopped();
-      }
-    };
+    state->attachCaptureCallbacks();
     state->stream->onProcessRequest = [weak]() {
       if (auto streamState = weak.lock()) {
         streamState->processRequest();
@@ -410,6 +492,43 @@ namespace xdpu {
       }
     }
     return results;
+  }
+
+  void Session::setDynamicTarget(const std::optional<Selection>& target) {
+    for (const auto& stream : m_impl->streams) {
+      if (stream) {
+        stream->setDynamicTarget(target);
+      }
+    }
+  }
+
+  void Session::setDynamicMode(DynamicMode mode) {
+    for (const auto& stream : m_impl->streams) {
+      if (stream && stream->dynamicMode != DynamicMode::Static) {
+        stream->dynamicMode = mode;
+      }
+    }
+  }
+
+  void Session::setFollowTarget(DynamicMode mode, const std::optional<Selection>& target) {
+    for (const auto& stream : m_impl->streams) {
+      if (stream && stream->dynamicMode == mode) {
+        stream->setDynamicTarget(target);
+      }
+    }
+  }
+
+  bool Session::hasDynamicStreams() const {
+    return std::ranges::any_of(m_impl->streams, [](const auto& stream) {
+      return stream && stream->dynamicMode != DynamicMode::Static;
+    });
+  }
+
+  std::optional<Session::DynamicMode> Session::dynamicMode() const {
+    const auto stream = std::ranges::find_if(m_impl->streams, [](const auto& candidate) {
+      return candidate && candidate->dynamicMode != DynamicMode::Static;
+    });
+    return stream == m_impl->streams.end() ? std::nullopt : std::optional((*stream)->dynamicMode);
   }
 
   sdbus::Variant Session::restoreDataVariant(const std::string& token) const {

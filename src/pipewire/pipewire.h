@@ -50,6 +50,7 @@ namespace xdpu {
     struct pw_buffer* dequeueBuffer();
     void queueBuffer(struct pw_buffer* buf);
     bool reconfigure(const CaptureConstraints& constraints);
+    bool setActive(bool active);
     void disconnect();
     bool connected() const;
     void triggerProcess();

@@ -79,6 +79,7 @@ daemon_sources = files(
   'src/dbus/session.cpp',
   'src/wayland/wayland.cpp',
   'src/pipewire/pipewire.cpp',
+  'src/umbriel/ipc.cpp',
 )
 
 executable(

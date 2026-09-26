@@ -35,6 +35,13 @@ namespace xdpu {
 
   class Session {
   public:
+    enum class DynamicMode : uint8_t {
+      Static,
+      Manual,
+      FollowWindow,
+      FollowOutput,
+    };
+
     enum class SourceKind : uint32_t {
       Monitor = 1,
       Window = 2,
@@ -64,7 +71,7 @@ namespace xdpu {
 
     using ClosedHandler = std::function<void()>;
 
-    Session(sdbus::IConnection& connection, std::string path, ClosedHandler closedHandler);
+    Session(sdbus::IConnection& connection, std::string path, std::string appId, ClosedHandler closedHandler);
     ~Session();
 
     Session(const Session&) = delete;
@@ -73,6 +80,7 @@ namespace xdpu {
     Session& operator=(Session&&) = delete;
 
     const std::string& path() const;
+    const std::string& appId() const;
     bool closed() const;
 
     void setSelectionOptions(
@@ -91,9 +99,14 @@ namespace xdpu {
     bool addStream(
         Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
         std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints, const Selection& selection,
-        uint32_t maxFps, ClosedHandler backendClosedHandler
+        CaptureCursorMode cursorMode, uint32_t maxFps, DynamicMode dynamicMode, ClosedHandler backendClosedHandler
     );
     std::vector<StreamResult> streamResults() const;
+    void setDynamicTarget(const std::optional<Selection>& target);
+    void setDynamicMode(DynamicMode mode);
+    void setFollowTarget(DynamicMode mode, const std::optional<Selection>& target);
+    [[nodiscard]] bool hasDynamicStreams() const;
+    [[nodiscard]] std::optional<DynamicMode> dynamicMode() const;
 
     sdbus::Variant restoreDataVariant(const std::string& token) const;
 

@@ -5,10 +5,12 @@
 #include "dbus/session.h"
 #include "loop/loop.h"
 #include "pipewire/pipewire.h"
+#include "umbriel/ipc.h"
 #include "wayland/wayland.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <iomanip>
 #include <nlohmann/json.hpp>
@@ -230,7 +232,8 @@ namespace xdpu {
       }
       // A source of a type the session did not request is refused like any unresolvable one.
       if (std::ranges::any_of(restore, [&](const Session::Selection& stored) {
-            return (sourceTypes & static_cast<uint32_t>(stored.kind)) == 0;
+            const uint32_t sourceType = stored.kind == Session::SourceKind::Monitor ? kSourceMonitor : kSourceWindow;
+            return (sourceTypes & sourceType) == 0;
           })) {
         return {};
       }
@@ -261,7 +264,6 @@ namespace xdpu {
         if (!values.is_array()) {
           return {};
         }
-
         for (const auto& value : values) {
           if (!value.is_object()) {
             continue;
@@ -312,11 +314,18 @@ namespace xdpu {
   } // namespace
 
   struct ScreenCastPortal::Impl {
+    struct DynamicGrant {
+      uint64_t serial = 0;
+      Session::DynamicMode mode = Session::DynamicMode::Manual;
+      std::chrono::steady_clock::time_point createdAt;
+    };
+
     struct PendingCapture {
       Session::Selection selection;
       std::unique_ptr<WaylandContext::CaptureSession> capture;
       CaptureConstraints constraints;
       bool hasConstraints = false;
+      Session::DynamicMode dynamicMode = Session::DynamicMode::Static;
     };
 
     Loop& loop;
@@ -326,6 +335,15 @@ namespace xdpu {
     WaylandContext& wayland;
     PipeWireContext& pipewire;
     std::map<std::string, std::shared_ptr<Session>> sessions;
+    std::map<std::string, DynamicGrant> dynamicGrants;
+    ScreenCastCommand screenCastCommand;
+    std::optional<Session::Selection> manualTarget;
+    std::optional<std::string> focusedWindow;
+    std::optional<std::string> focusedOutput;
+    std::function<void(bool)> activeChangedHandler;
+    bool reportedActive = false;
+
+    static constexpr auto kDynamicGrantLifetime = std::chrono::seconds(2);
 
     Impl(
         Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, const Config& config,
@@ -340,9 +358,8 @@ namespace xdpu {
                                      const sdbus::ObjectPath& sessionHandle, const std::string& appId,
                                      const PortalResults& options
                                  ) {
-                    (void)appId;
                     (void)options;
-                    createSession(std::move(result), std::string(handle), std::string(sessionHandle));
+                    createSession(std::move(result), std::string(handle), std::string(sessionHandle), appId);
                   })
                   .withInputParamNames("handle", "session_handle", "app_id", "options")
                   .withOutputParamNames("response", "results"),
@@ -377,18 +394,36 @@ namespace xdpu {
           .forInterface(kInterface);
     }
 
-    void deferEraseSession(const std::string& path) {
-      loop.addTimer(0, [this, path]() { sessions.erase(path); });
+    void reportActive(bool force = false) {
+      const bool active =
+          std::ranges::any_of(sessions, [](const auto& entry) { return entry.second->hasDynamicStreams(); });
+      if (!force && active == reportedActive) {
+        return;
+      }
+      reportedActive = active;
+      if (activeChangedHandler) {
+        activeChangedHandler(active);
+      }
     }
 
-    void createSession(PortalResponse&& result, const std::string& handle, const std::string& sessionPath) {
+    void deferEraseSession(const std::string& path) {
+      loop.addTimer(0, [this, path]() {
+        sessions.erase(path);
+        reportActive();
+      });
+    }
+
+    void createSession(
+        PortalResponse&& result, const std::string& handle, const std::string& sessionPath, const std::string& appId
+    ) {
       auto request = std::make_shared<Request>(connection, handle, []() {});
       if (auto existing = sessions.find(sessionPath); existing != sessions.end()) {
         existing->second->close();
         sessions.erase(existing);
+        reportActive();
       }
 
-      sessions.emplace(sessionPath, std::make_shared<Session>(connection, sessionPath, [this, sessionPath]() {
+      sessions.emplace(sessionPath, std::make_shared<Session>(connection, sessionPath, appId, [this, sessionPath]() {
                          deferEraseSession(sessionPath);
                        }));
       result.returnResults(uint32_t{0}, PortalResults{});
@@ -432,6 +467,10 @@ namespace xdpu {
       std::vector<PendingCapture> pending;
       int timeoutTimer = 0;
       bool done = false;
+      std::optional<Session::DynamicMode> waitingMode;
+      std::optional<Session::DynamicMode> requestedDynamicMode;
+      uint64_t screenCastSerial = 0;
+      CaptureCursorMode captureCursorMode = CaptureCursorMode::Hidden;
 
       StartOperation(Impl& portal, PortalResponse&& result, std::shared_ptr<Session> session)
           : portal(portal), result(std::move(result)), session(std::move(session)) {}
@@ -445,7 +484,41 @@ namespace xdpu {
           startCaptures(restored);
           return;
         }
+        if (const auto mode = joinDynamicMode()) {
+          startDynamic(std::nullopt, *mode);
+          return;
+        }
         runChooser();
+      }
+
+      std::optional<Session::DynamicMode> activeDynamicMode() const {
+        if (session->appId().empty()) {
+          return std::nullopt;
+        }
+        const auto existing = std::ranges::find_if(portal.sessions, [this](const auto& entry) {
+          const auto& existing = entry.second;
+          return existing != session && existing->appId() == session->appId() && existing->hasDynamicStreams();
+        });
+        return existing == portal.sessions.end() ? std::nullopt : existing->second->dynamicMode();
+      }
+
+      std::optional<Session::DynamicMode> joinDynamicMode() const {
+        if (const auto mode = activeDynamicMode()) {
+          return mode;
+        }
+        if (session->appId().empty()) {
+          return std::nullopt;
+        }
+        if (const auto mode = portal.recentDynamicMode(session->appId())) {
+          return mode;
+        }
+        const auto operation = std::ranges::find_if(portal.inflight, [this](const auto& candidate) {
+          const auto& operation = candidate;
+          return operation.get() != this
+              && operation->requestedDynamicMode.has_value()
+              && operation->session->appId() == session->appId();
+        });
+        return operation == portal.inflight.end() ? std::nullopt : (*operation)->requestedDynamicMode;
       }
 
       void attachRequest(const std::string& handle) {
@@ -562,18 +635,57 @@ namespace xdpu {
         if (!session->multiple() && selections.size() > 1) {
           selections.resize(1);
         }
-        session->setSelections(selections);
+        if (selections.size() == 1) {
+          startDynamic(std::move(selections.front()), Session::DynamicMode::Manual);
+          return;
+        }
+        startResolvedCaptures(std::move(selections), Session::DynamicMode::Static);
+      }
+
+      void startDynamic(std::optional<Session::Selection> initial, Session::DynamicMode mode) {
+        requestedDynamicMode = mode;
+        std::optional<Session::Selection> target;
+        if (initial) {
+          session->setSelections({*initial});
+          target = *initial;
+          if (mode == Session::DynamicMode::Manual) {
+            portal.manualTarget = target;
+          }
+        } else {
+          target = portal.targetForMode(mode);
+          if (target) {
+            session->setSelections({*target});
+          }
+        }
+        if (target) {
+          startResolvedCaptures({std::move(*target)}, mode);
+          return;
+        }
+        waitingMode = mode;
+        screenCastSerial = portal.screenCastCommand.serial;
+      }
+
+      void startResolvedCaptures(std::vector<Session::Selection> selections, Session::DynamicMode mode) {
+        if (selections.empty()) {
+          finish(2, {});
+          return;
+        }
+        if (mode == Session::DynamicMode::Static) {
+          session->setSelections(selections);
+        } else if (session->selections().empty()) {
+          session->setSelections({selections.front()});
+        }
 
         pending.clear();
         pending.reserve(selections.size());
         auto self = shared_from_this();
         std::weak_ptr<StartOperation> weakSelf = self;
-        CaptureCursorMode cursorMode = CaptureCursorMode::Hidden;
+        captureCursorMode = CaptureCursorMode::Hidden;
         if (session->cursorMode() == kCursorEmbedded) {
-          cursorMode = CaptureCursorMode::Embedded;
+          captureCursorMode = CaptureCursorMode::Embedded;
         } else if (session->cursorMode() == kCursorMetadata) {
           if (portal.pipewire.supportsCursorMetadata()) {
-            cursorMode = CaptureCursorMode::Metadata;
+            captureCursorMode = CaptureCursorMode::Metadata;
           } else {
             // Do not silently burn the cursor into the image when the caller
             // requested a separate metadata stream.  Hidden is the only
@@ -584,7 +696,7 @@ namespace xdpu {
 
         for (const Session::Selection& selection : selections) {
           const size_t index = pending.size();
-          pending.push_back(PendingCapture{selection, nullptr, {}, false});
+          pending.push_back(PendingCapture{selection, nullptr, {}, false, mode});
           ConstraintsCallback callback = [weakSelf, index](const CaptureConstraints& constraints) {
             auto self = weakSelf.lock();
             if (!self || self->done) {
@@ -595,10 +707,10 @@ namespace xdpu {
 
           if (selection.kind == Session::SourceKind::Monitor) {
             pending[index].capture =
-                portal.wayland.createOutputCapture(selection.output, cursorMode, std::move(callback));
+                portal.wayland.createOutputCapture(selection.output, captureCursorMode, std::move(callback));
           } else {
             pending[index].capture =
-                portal.wayland.createToplevelCapture(selection.identifier, cursorMode, std::move(callback));
+                portal.wayland.createToplevelCapture(selection.identifier, captureCursorMode, std::move(callback));
           }
 
           if (!pending[index].capture) {
@@ -621,6 +733,40 @@ namespace xdpu {
           self->finish(2, {});
         });
         maybeCompleteCaptures();
+      }
+
+      void screenCastCommandChanged(const ScreenCastCommand& command) {
+        if (done || !waitingMode || command.serial <= screenCastSerial) {
+          return;
+        }
+        screenCastSerial = command.serial;
+        if (command.kind == ScreenCastCommand::Kind::Clear) {
+          waitingMode = Session::DynamicMode::Manual;
+          return;
+        }
+        if (command.kind == ScreenCastCommand::Kind::FollowStop) {
+          waitingMode = Session::DynamicMode::Manual;
+          return;
+        }
+        const Session::DynamicMode mode = command.kind == ScreenCastCommand::Kind::FollowWindow
+            ? Session::DynamicMode::FollowWindow
+            : command.kind == ScreenCastCommand::Kind::FollowOutput ? Session::DynamicMode::FollowOutput
+                                                                    : Session::DynamicMode::Manual;
+        const auto selection = portal.targetForMode(mode);
+        if (!selection) {
+          waitingMode = mode;
+          return;
+        }
+        waitingMode.reset();
+        startResolvedCaptures({*selection}, mode);
+      }
+
+      void followTargetChanged(Session::DynamicMode mode, const std::optional<Session::Selection>& target) {
+        if (done || waitingMode != mode || !target) {
+          return;
+        }
+        waitingMode.reset();
+        startResolvedCaptures({*target}, mode);
       }
 
       void constraintsReady(size_t index, const CaptureConstraints& constraints) {
@@ -681,7 +827,8 @@ namespace xdpu {
           Impl* portalPtr = &portal;
           if (!session->addStream(
                   portal.loop, portal.wayland, std::move(item.capture), std::move(stream), item.constraints,
-                  item.selection, static_cast<uint32_t>(std::max(0, portal.config.screencast.maxFps)),
+                  item.selection, captureCursorMode,
+                  static_cast<uint32_t>(std::max(0, portal.config.screencast.maxFps)), item.dynamicMode,
                   [portalPtr, sessionPath]() {
                     const auto it = portalPtr->sessions.find(sessionPath);
                     if (it != portalPtr->sessions.end()) {
@@ -696,6 +843,7 @@ namespace xdpu {
 
         // Process pending PipeWire events so stream node IDs are resolved.
         portal.pipewire.processPending();
+        portal.reportActive();
         finish(0, buildResults());
       }
 
@@ -721,12 +869,144 @@ namespace xdpu {
           results.emplace("persist_mode", sdbus::Variant{session->persistMode()});
           results.emplace("restore_data", session->restoreDataVariant(token));
         }
+        if (session->hasDynamicStreams()) {
+          if (const auto mode = session->dynamicMode()) {
+            portal.rememberDynamicGrant(session->appId(), *mode);
+          }
+        }
 
         return results;
       }
     };
 
     std::set<std::shared_ptr<StartOperation>> inflight;
+
+    void rememberDynamicGrant(const std::string& appId, Session::DynamicMode mode) {
+      if (appId.empty() || mode == Session::DynamicMode::Static) {
+        return;
+      }
+      dynamicGrants[appId] = DynamicGrant{screenCastCommand.serial, mode, std::chrono::steady_clock::now()};
+    }
+
+    std::optional<Session::DynamicMode> recentDynamicMode(const std::string& appId) {
+      const auto grant = dynamicGrants.find(appId);
+      if (grant == dynamicGrants.end()) {
+        return std::nullopt;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (grant->second.serial != screenCastCommand.serial || now - grant->second.createdAt > kDynamicGrantLifetime) {
+        dynamicGrants.erase(grant);
+        return std::nullopt;
+      }
+      return grant->second.mode;
+    }
+
+    std::optional<Session::Selection> targetForMode(Session::DynamicMode mode) const {
+      if (mode == Session::DynamicMode::Manual) {
+        return manualTarget;
+      }
+      if (mode == Session::DynamicMode::FollowWindow && focusedWindow) {
+        if (const ToplevelInfo* toplevel = findToplevelByIdentifier(wayland, *focusedWindow)) {
+          return selectionForToplevel(*toplevel);
+        }
+      }
+      if (mode == Session::DynamicMode::FollowOutput && focusedOutput) {
+        if (const OutputInfo* output = findOutput(wayland, *focusedOutput)) {
+          return selectionForOutput(*output);
+        }
+      }
+      return std::nullopt;
+    }
+
+    void setScreenCastCommand(const ScreenCastCommand& command) {
+      if (command.serial <= screenCastCommand.serial) {
+        return;
+      }
+      screenCastCommand = command;
+
+      Session::DynamicMode mode = Session::DynamicMode::Manual;
+      std::optional<Session::Selection> selection;
+      if (command.kind == ScreenCastCommand::Kind::Window) {
+        if (const ToplevelInfo* toplevel = findToplevelByIdentifier(wayland, command.value)) {
+          selection = selectionForToplevel(*toplevel);
+        }
+        manualTarget = selection;
+      } else if (command.kind == ScreenCastCommand::Kind::Output) {
+        if (const OutputInfo* output = findOutput(wayland, command.value)) {
+          selection = selectionForOutput(*output);
+        }
+        manualTarget = selection;
+      } else if (command.kind == ScreenCastCommand::Kind::FollowWindow) {
+        mode = Session::DynamicMode::FollowWindow;
+        selection = targetForMode(mode);
+      } else if (command.kind == ScreenCastCommand::Kind::FollowOutput) {
+        mode = Session::DynamicMode::FollowOutput;
+        selection = targetForMode(mode);
+      } else if (command.kind == ScreenCastCommand::Kind::Clear) {
+        manualTarget.reset();
+      } else if (command.kind == ScreenCastCommand::Kind::FollowStop) {
+        for (const auto& [path, session] : sessions) {
+          (void)path;
+          const auto currentMode = session->dynamicMode();
+          if (currentMode == Session::DynamicMode::FollowWindow || currentMode == Session::DynamicMode::FollowOutput) {
+            manualTarget = targetForMode(*currentMode);
+            break;
+          }
+        }
+      }
+
+      for (const auto& [path, session] : sessions) {
+        (void)path;
+        if (command.kind == ScreenCastCommand::Kind::FollowStop) {
+          session->setDynamicMode(Session::DynamicMode::Manual);
+          if (session->hasDynamicStreams()) {
+            rememberDynamicGrant(session->appId(), Session::DynamicMode::Manual);
+          }
+          continue;
+        }
+        session->setDynamicMode(mode);
+        session->setDynamicTarget(selection);
+        if (selection && session->hasDynamicStreams()) {
+          rememberDynamicGrant(session->appId(), mode);
+        }
+      }
+      const auto operations = inflight;
+      for (const auto& operation : operations) {
+        operation->screenCastCommandChanged(command);
+      }
+    }
+
+    void setFocusedWindow(const std::optional<std::string>& identifier) {
+      if (focusedWindow == identifier) {
+        return;
+      }
+      focusedWindow = identifier;
+      const auto target = targetForMode(Session::DynamicMode::FollowWindow);
+      for (const auto& [path, session] : sessions) {
+        (void)path;
+        session->setFollowTarget(Session::DynamicMode::FollowWindow, target);
+      }
+      const auto operations = inflight;
+      for (const auto& operation : operations) {
+        operation->followTargetChanged(Session::DynamicMode::FollowWindow, target);
+      }
+    }
+
+    void setFocusedOutput(const std::optional<std::string>& output) {
+      if (focusedOutput == output) {
+        return;
+      }
+      focusedOutput = output;
+      const auto target = targetForMode(Session::DynamicMode::FollowOutput);
+      for (const auto& [path, session] : sessions) {
+        (void)path;
+        session->setFollowTarget(Session::DynamicMode::FollowOutput, target);
+      }
+      const auto operations = inflight;
+      for (const auto& operation : operations) {
+        operation->followTargetChanged(Session::DynamicMode::FollowOutput, target);
+      }
+    }
 
     void start(PortalResponse&& result, const std::string& handle, const std::string& sessionPath) {
       const auto sessionIt = sessions.find(sessionPath);
@@ -752,5 +1032,22 @@ namespace xdpu {
   ScreenCastPortal::~ScreenCastPortal() = default;
 
   void ScreenCastPortal::onConfigChanged(const Config&, const Config& newCfg) { m_impl->config = newCfg; }
+
+  void ScreenCastPortal::onScreenCastCommand(const ScreenCastCommand& command) {
+    m_impl->setScreenCastCommand(command);
+  }
+
+  void ScreenCastPortal::onFocusedWindowChanged(const std::optional<std::string>& identifier) {
+    m_impl->setFocusedWindow(identifier);
+  }
+
+  void ScreenCastPortal::onFocusedOutputChanged(const std::optional<std::string>& output) {
+    m_impl->setFocusedOutput(output);
+  }
+
+  void ScreenCastPortal::setActiveChangedHandler(std::function<void(bool)> handler) {
+    m_impl->activeChangedHandler = std::move(handler);
+    m_impl->reportActive(true);
+  }
 
 } // namespace xdpu

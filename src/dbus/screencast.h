@@ -1,6 +1,9 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 
 namespace sdbus {
   class IConnection;
@@ -12,6 +15,7 @@ namespace xdpu {
   class Loop;
   class PipeWireContext;
   class WaylandContext;
+  struct ScreenCastCommand;
   struct Config;
 
   class ScreenCastPortal {
@@ -28,6 +32,10 @@ namespace xdpu {
     ScreenCastPortal& operator=(ScreenCastPortal&&) = delete;
 
     void onConfigChanged(const Config& oldCfg, const Config& newCfg);
+    void onScreenCastCommand(const ScreenCastCommand& command);
+    void onFocusedWindowChanged(const std::optional<std::string>& identifier);
+    void onFocusedOutputChanged(const std::optional<std::string>& output);
+    void setActiveChangedHandler(std::function<void(bool)> handler);
 
   private:
     struct Impl;

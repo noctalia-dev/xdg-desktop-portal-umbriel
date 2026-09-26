@@ -5,6 +5,7 @@
 #include "dbus/screenshot.h"
 #include "loop/loop.h"
 #include "pipewire/pipewire.h"
+#include "umbriel/ipc.h"
 #include "wayland/wayland.h"
 
 #include <csignal>
@@ -172,6 +173,30 @@ namespace xdpu {
     }
     if (m_impl->screencast) {
       m_impl->screencast->onConfigChanged(oldCfg, newCfg);
+    }
+  }
+
+  void DbusPortal::onScreenCastCommand(const ScreenCastCommand& command) {
+    if (m_impl->screencast) {
+      m_impl->screencast->onScreenCastCommand(command);
+    }
+  }
+
+  void DbusPortal::onFocusedWindowChanged(const std::optional<std::string>& identifier) {
+    if (m_impl->screencast) {
+      m_impl->screencast->onFocusedWindowChanged(identifier);
+    }
+  }
+
+  void DbusPortal::onFocusedOutputChanged(const std::optional<std::string>& output) {
+    if (m_impl->screencast) {
+      m_impl->screencast->onFocusedOutputChanged(output);
+    }
+  }
+
+  void DbusPortal::setScreenCastActiveHandler(std::function<void(bool)> handler) {
+    if (m_impl->screencast) {
+      m_impl->screencast->setActiveChangedHandler(std::move(handler));
     }
   }
 

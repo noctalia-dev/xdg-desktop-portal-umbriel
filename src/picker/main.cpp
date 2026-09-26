@@ -22,6 +22,7 @@ namespace {
 
   struct OutputItem {
     std::string name;
+    std::string title;
     std::string description;
     int width = 0;
     int height = 0;
@@ -73,7 +74,6 @@ namespace {
     GtkWidget* outputList = nullptr;
     GtkWidget* windowList = nullptr;
     GtkWidget* shareButton = nullptr;
-    GtkWidget* selectionLabel = nullptr;
     std::vector<PreviewCard> previewCards;
     std::unique_ptr<xdpu::Previews> previews;
     GtkCssProvider* paletteProvider = nullptr;
@@ -385,6 +385,7 @@ namespace {
           }
           state.outputs.push_back({
               .name = jsonString(output, "name"),
+              .title = jsonString(output, "title"),
               .description = jsonString(output, "description"),
               .width = jsonInt(output, "width"),
               .height = jsonInt(output, "height"),
@@ -459,12 +460,6 @@ namespace {
     g_list_free(screens);
     g_list_free(windows);
     gtk_widget_set_sensitive(state.shareButton, count > 0);
-    if (state.selectionLabel != nullptr) {
-      const std::string text = count == 0
-          ? "Nothing selected"
-          : std::to_string(count) + (count == 1 ? " source selected" : " sources selected");
-      gtk_label_set_text(GTK_LABEL(state.selectionLabel), text.c_str());
-    }
   }
 
   void unselectList(GtkWidget* list) {
@@ -515,7 +510,7 @@ namespace {
 
   // A thumbnail is wider than the card, so the preview rides in a non-measured
   // overlay: the empty slot below it, not the captured texture, fixes the card size.
-  GtkWidget* makePreview(AppState& state, RowKind kind, const std::string& identifier) {
+  GtkWidget* makePreview(AppState& state, RowKind kind, const std::string& identifier, bool capture) {
     GtkWidget* frame = gtk_overlay_new();
     GtkWidget* slot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(slot, kPreviewWidth, kPreviewHeight);
@@ -531,14 +526,16 @@ namespace {
     );
     gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
     gtk_box_append(GTK_BOX(fallback), icon);
-    GtkWidget* label = gtk_label_new("Loading preview…");
+    GtkWidget* label = gtk_label_new(capture ? "Loading preview…" : "Switch target with an Umbriel action");
     gtk_widget_add_css_class(label, "preview-caption");
     gtk_box_append(GTK_BOX(fallback), label);
     g_object_set_data(G_OBJECT(stack), "preview-label", label);
     gtk_stack_add_named(GTK_STACK(stack), fallback, "fallback");
     gtk_overlay_add_overlay(GTK_OVERLAY(frame), stack);
 
-    state.previewCards.push_back({{kind == RowKind::Monitor, identifier}, stack});
+    if (capture) {
+      state.previewCards.push_back({{kind == RowKind::Monitor, identifier}, stack});
+    }
     return frame;
   }
 
@@ -555,7 +552,7 @@ namespace {
 
   GtkWidget* makeCard(
       AppState& state, RowKind kind, guint index, const std::string& identifier, const std::string& title,
-      const std::string& subtitle, const std::string& detail
+      const std::string& subtitle, const std::string& detail, bool capturePreview = true
   ) {
     GtkWidget* row = gtk_flow_box_child_new();
     gtk_widget_add_css_class(row, "source-card");
@@ -565,7 +562,7 @@ namespace {
 
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget* overlay = gtk_overlay_new();
-    gtk_overlay_set_child(GTK_OVERLAY(overlay), makePreview(state, kind, identifier));
+    gtk_overlay_set_child(GTK_OVERLAY(overlay), makePreview(state, kind, identifier, capturePreview));
     GtkWidget* check = gtk_image_new_from_icon_name("object-select-symbolic");
     gtk_widget_add_css_class(check, "selection-check");
     gtk_widget_set_halign(check, GTK_ALIGN_END);
@@ -634,8 +631,8 @@ namespace {
         gtk_flow_box_insert(
             GTK_FLOW_BOX(list),
             makeCard(
-                state, kind, static_cast<guint>(i), output.name, displayOrFallback(output.name, "Unnamed screen"),
-                output.description, detail
+                state, kind, static_cast<guint>(i), output.name, displayOrFallback(output.title, "Unnamed screen"),
+                output.description, detail, true
             ),
             -1
         );
@@ -647,7 +644,8 @@ namespace {
             GTK_FLOW_BOX(list),
             makeCard(
                 state, kind, static_cast<guint>(i), window.identifier,
-                displayOrFallback(window.title, "Untitled window"), displayOrFallback(window.appId, "Application"), ""
+                displayOrFallback(window.title, "Untitled window"), displayOrFallback(window.appId, "Application"), "",
+                true
             ),
             -1
         );
@@ -737,7 +735,10 @@ namespace {
       if (kind == RowKind::Monitor && index < state.outputs.size()) {
         selections.push_back({{"kind", "monitor"}, {"output", state.outputs[index].name}});
       } else if (kind == RowKind::Window && index < state.windows.size()) {
-        selections.push_back({{"kind", "window"}, {"identifier", state.windows[index].identifier}});
+        selections.push_back({
+            {"kind", "window"},
+            {"identifier", state.windows[index].identifier},
+        });
       }
 
       if (!state.multiple && !selections.empty()) {
@@ -781,7 +782,7 @@ namespace {
 
     if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
       // Let focused controls (Cancel and the source tabs) handle their own activation.
-      if (focus != nullptr && GTK_IS_BUTTON(focus)) {
+      if (focus != nullptr && (GTK_IS_BUTTON(focus) || GTK_IS_CHECK_BUTTON(focus))) {
         return FALSE;
       }
       if (state->shareButton != nullptr && gtk_widget_get_sensitive(state->shareButton)) {
@@ -852,12 +853,13 @@ namespace {
       gtk_box_append(GTK_BOX(body), placeholder);
     }
 
-    GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_widget_add_css_class(buttons, "picker-footer");
-    state.selectionLabel = makeLabel("Nothing selected", false, true);
-    gtk_widget_set_hexpand(state.selectionLabel, TRUE);
-    gtk_box_append(GTK_BOX(buttons), state.selectionLabel);
+    GtkWidget* footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_widget_add_css_class(footer, "picker-footer");
+    GtkWidget* spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(footer), spacer);
 
+    GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     GtkWidget* cancelButton = gtk_button_new_with_label("Cancel");
     state.shareButton = gtk_button_new_with_label("Share");
     gtk_widget_add_css_class(state.shareButton, "suggested-action");
@@ -868,8 +870,9 @@ namespace {
 
     gtk_box_append(GTK_BOX(buttons), cancelButton);
     gtk_box_append(GTK_BOX(buttons), state.shareButton);
+    gtk_box_append(GTK_BOX(footer), buttons);
     gtk_box_append(GTK_BOX(content), body);
-    gtk_box_append(GTK_BOX(content), buttons);
+    gtk_box_append(GTK_BOX(content), footer);
     return content;
   }
 
