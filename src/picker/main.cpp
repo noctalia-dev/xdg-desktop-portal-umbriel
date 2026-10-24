@@ -890,6 +890,14 @@ namespace {
     // No custom titlebar: Umbriel owns the window decorations and their visibility.
     gtk_window_set_child(GTK_WINDOW(window), makeContent(*state));
     gtk_window_set_default_widget(GTK_WINDOW(window), state->shareButton);
+    // A single-source share is most often the first screen: preselect and focus it so Enter shares.
+    // Multiple-selection requests start empty, as a preselection there would have to be undone.
+    if (!state->multiple && state->outputList != nullptr) {
+      if (GtkFlowBoxChild* first = gtk_flow_box_get_child_at_index(GTK_FLOW_BOX(state->outputList), 0)) {
+        gtk_flow_box_select_child(GTK_FLOW_BOX(state->outputList), first);
+        gtk_widget_grab_focus(GTK_WIDGET(first));
+      }
+    }
 
     GtkEventController* keyController = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(keyController, GTK_PHASE_CAPTURE);
