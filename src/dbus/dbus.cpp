@@ -189,6 +189,7 @@ namespace xdpu {
   }
 
   void DbusPortal::onFocusedOutputChanged(const std::optional<std::string>& output) {
+    m_impl->wayland.setFocusedOutput(output);
     if (m_impl->screencast) {
       m_impl->screencast->onFocusedOutputChanged(output);
     }

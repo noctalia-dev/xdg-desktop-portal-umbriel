@@ -58,8 +58,10 @@ A dev shell is also available via `nix develop`.
 
 The picker shows screen and window thumbnails in a responsive grid. Click a card
 and choose **Share**; requests that allow multiple sources support clicking cards
-to select or deselect them, including across tabs. Space toggles a focused card in
-multiple-selection mode, Enter shares, and Escape cancels.
+to select or deselect them, including across tabs. Single-source requests open with
+Umbriel's focused screen selected (or the only screen, when focus is unknown), so
+Enter shares it. Space toggles a focused card in multiple-selection mode, Enter
+shares, and Escape cancels.
 
 Window decorations are delegated to the compositor: the picker sets `GTK_CSD=0`
 and draws no titlebar, so Umbriel owns the border and corner clipping. Controls

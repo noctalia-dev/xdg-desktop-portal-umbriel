@@ -26,6 +26,7 @@ namespace {
     std::string description;
     int width = 0;
     int height = 0;
+    bool focused = false;
   };
 
   struct WindowItem {
@@ -353,6 +354,11 @@ namespace {
     return it->get<int>();
   }
 
+  bool jsonBool(const json& object, const char* key) {
+    const auto it = object.find(key);
+    return it != object.end() && it->is_boolean() && it->get<bool>();
+  }
+
   AppState parseRequest(const std::string& input) {
     AppState state;
 
@@ -389,6 +395,7 @@ namespace {
               .description = jsonString(output, "description"),
               .width = jsonInt(output, "width"),
               .height = jsonInt(output, "height"),
+              .focused = jsonBool(output, "focused"),
           });
         }
       }
@@ -890,6 +897,24 @@ namespace {
     // No custom titlebar: Umbriel owns the window decorations and their visibility.
     gtk_window_set_child(GTK_WINDOW(window), makeContent(*state));
     gtk_window_set_default_widget(GTK_WINDOW(window), state->shareButton);
+    // A single-source share most often targets the screen the user is on: preselect and focus the
+    // compositor's focused output so Enter shares it. Without focus info only a lone screen is unambiguous.
+    // Multiple-selection requests always start empty, as a preselection there would have to be undone.
+    if (!state->multiple && state->outputList != nullptr) {
+      const auto focused = std::ranges::find_if(state->outputs, &OutputItem::focused);
+      int index = -1;
+      if (focused != state->outputs.end()) {
+        index = static_cast<int>(focused - state->outputs.begin());
+      } else if (state->outputs.size() == 1) {
+        index = 0;
+      }
+      if (index >= 0) {
+        if (GtkFlowBoxChild* child = gtk_flow_box_get_child_at_index(GTK_FLOW_BOX(state->outputList), index)) {
+          gtk_flow_box_select_child(GTK_FLOW_BOX(state->outputList), child);
+          gtk_widget_grab_focus(GTK_WIDGET(child));
+        }
+      }
+    }
 
     GtkEventController* keyController = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(keyController, GTK_PHASE_CAPTURE);

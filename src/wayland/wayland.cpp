@@ -77,6 +77,7 @@ namespace xdpu {
 
     std::vector<OutputInfo> outputs;
     std::vector<ToplevelInfo> toplevels;
+    std::optional<std::string> focusedOutput;
     std::unordered_map<wl_output*, std::unique_ptr<OutputState>> outputStates;
     std::unordered_map<ext_foreign_toplevel_handle_v1*, std::unique_ptr<ToplevelState>> toplevelStates;
 
@@ -1143,6 +1144,8 @@ namespace xdpu {
 
   const std::vector<ToplevelInfo>& WaylandContext::toplevels() const { return m_impl->toplevels; }
 
+  void WaylandContext::setFocusedOutput(std::optional<std::string> name) { m_impl->focusedOutput = std::move(name); }
+
   std::string WaylandContext::buildChooserJson(uint32_t sourceTypes, bool multiple) const {
     nlohmann::json request;
     request["multiple"] = multiple;
@@ -1159,6 +1162,7 @@ namespace xdpu {
             {"description", output.description},
             {"width", output.width},
             {"height", output.height},
+            {"focused", m_impl->focusedOutput == output.name},
         });
       }
     }
