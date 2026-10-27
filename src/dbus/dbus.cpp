@@ -1,6 +1,7 @@
 #include "dbus/dbus.h"
 
 #include "config/config.h"
+#include "dbus/input_capture.h"
 #include "dbus/screencast.h"
 #include "dbus/screenshot.h"
 #include "loop/loop.h"
@@ -53,6 +54,7 @@ namespace xdpu {
     std::unique_ptr<sdbus::IObject> desktopObject;
     std::unique_ptr<ScreenshotPortal> screenshot;
     std::unique_ptr<ScreenCastPortal> screencast;
+    std::unique_ptr<InputCapturePortal> inputCapture;
     int busFd = -1;
     int busFdWatch = 0;
     int eventFd = -1;
@@ -68,6 +70,8 @@ namespace xdpu {
       screenshot = std::make_unique<ScreenshotPortal>(loop, *connection, *desktopObject, this->config, wayland);
       screencast =
           std::make_unique<ScreenCastPortal>(loop, *connection, *desktopObject, this->config, wayland, pipewire);
+
+      inputCapture = std::make_unique<InputCapturePortal>(loop, *connection, *desktopObject, wayland);
 
       refreshPollData();
       drain();
@@ -86,6 +90,7 @@ namespace xdpu {
         loop.removeFd(eventFdWatch);
         eventFdWatch = 0;
       }
+      inputCapture.reset();
       screencast.reset();
       screenshot.reset();
       desktopObject.reset();

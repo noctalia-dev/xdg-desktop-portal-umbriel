@@ -38,6 +38,7 @@ protocols = {
   'ext-foreign-toplevel-list-v1': wp_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
   'linux-dmabuf-v1':              wp_dir / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
   'xdg-output-unstable-v1':       wp_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
+  'umbriel-input-capture-v1':     meson.current_source_dir() / 'protocols/umbriel-input-capture-v1.xml',
 }
 
 protocol_sources = []
@@ -74,6 +75,7 @@ daemon_sources = files(
   'src/loop/loop.cpp',
   'src/config/config.cpp',
   'src/dbus/dbus.cpp',
+  'src/dbus/input_capture.cpp',
   'src/dbus/screenshot.cpp',
   'src/dbus/screencast.cpp',
   'src/dbus/request.cpp',
@@ -104,6 +106,13 @@ executable(
 # --- tests -------------------------------------------------------------------
 
 if get_option('tests')
+  libei_test_dep = dependency('libei-1.0', version: '>=1.3')
+  executable(
+    'input-capture-test-client',
+    'tests/input_capture_client.cpp',
+    dependencies: [sdbus_dep, libei_test_dep],
+  )
+
   buffer_params_test = executable(
     'pipewire-buffer-params-test',
     'tests/pipewire_buffer_params.cpp',

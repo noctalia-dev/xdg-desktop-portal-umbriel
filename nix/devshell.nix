@@ -18,6 +18,8 @@ pkgs.mkShell {
     gnused
     findutils
     gdb
+    # Supplies dbus-daemon and dbus-send for the private-bus integration check.
+    dbus
   ];
 
   buildInputs = with pkgs; [
@@ -32,6 +34,8 @@ pkgs.mkShell {
     tomlplusplus
     nlohmann_json
     gtk4
+    # Builds the EI receiver used by InputCapture integration checks.
+    libei
   ];
 
   shellHook = ''
