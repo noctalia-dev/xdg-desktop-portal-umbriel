@@ -106,6 +106,19 @@ executable(
 # --- tests -------------------------------------------------------------------
 
 if get_option('tests')
+  capture_transform_test = executable(
+    'capture-transform-test',
+    'tests/capture_transform.cpp',
+    include_directories: include_directories('src'),
+  )
+  test('capture-transform', capture_transform_test)
+
+  executable(
+    'screencast-test-client',
+    'tests/screencast_test_client.cpp',
+    dependencies: [sdbus_dep, pipewire_dep],
+  )
+
   libei_test_dep = dependency('libei-1.0', version: '>=1.3')
   executable(
     'input-capture-test-client',

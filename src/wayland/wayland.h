@@ -1,5 +1,7 @@
 #pragma once
 
+#include "wayland/capture_transform.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -11,6 +13,7 @@
 
 struct wl_buffer;
 struct wl_display;
+struct wl_output;
 struct ext_image_capture_source_v1;
 struct ext_image_copy_capture_session_v1;
 struct ext_image_copy_capture_frame_v1;
@@ -54,32 +57,6 @@ namespace xdpu {
     size_t size = 0;
   };
 
-  struct BufferPoint {
-    int32_t x = 0;
-    int32_t y = 0;
-  };
-
-  // Maps a pixel in an output's displayed orientation onto a capture buffer of
-  // bufferWidth x bufferHeight carrying `transform` (a wl_output.transform).
-  // Rotations by 90 or 270 degrees swap the displayed axes.
-  inline BufferPoint
-  displayToBuffer(int32_t x, int32_t y, int32_t bufferWidth, int32_t bufferHeight, uint32_t transform) {
-    const int32_t displayWidth = (transform & 1U) != 0 ? bufferHeight : bufferWidth;
-    // Invert the horizontal flip first, then the rotation, mirroring how
-    // wl_output.transform composes them.
-    const int32_t fx = (transform & 4U) != 0 ? displayWidth - 1 - x : x;
-    switch (transform & 3U) {
-    case 1:
-      return {y, bufferHeight - 1 - fx};
-    case 2:
-      return {bufferWidth - 1 - fx, bufferHeight - 1 - y};
-    case 3:
-      return {bufferWidth - 1 - y, fx};
-    default:
-      return {fx, y};
-    }
-  }
-
   struct DmabufPlane {
     int fd = -1;
     uint32_t stride = 0;
@@ -89,6 +66,7 @@ namespace xdpu {
   struct CaptureConstraints {
     uint32_t bufferWidth = 0;
     uint32_t bufferHeight = 0;
+    uint32_t transform = 0;           // wl_output.transform of the raw capture buffer
     std::vector<uint32_t> shmFormats; // DRM fourcc, converted from wl_shm.format on receipt
     dev_t dmabufDevice = 0;
 
@@ -165,7 +143,10 @@ namespace xdpu {
       [[nodiscard]] const CursorMetadata* cursorMetadata() const;
 
       Impl& impl;
+      std::shared_ptr<char> frameLifetime = std::make_shared<char>();
+      uint64_t transformRevision = 0;
       ext_image_capture_source_v1* source = nullptr;
+      struct wl_output* output = nullptr; // observed only while registered with impl
       ext_image_copy_capture_session_v1* session = nullptr;
       std::unique_ptr<CursorCapture> cursor;
       CaptureConstraints constraints;
@@ -182,6 +163,9 @@ namespace xdpu {
     struct CaptureFrame {
       ext_image_copy_capture_frame_v1* frame = nullptr;
       CaptureBuffer buffer;
+      CaptureSession* owner = nullptr;
+      std::weak_ptr<char> ownerLifetime;
+      uint64_t transformRevision = 0;
       FrameReadyCallback onReady;
       FrameFailedCallback onFailed;
       uint64_t presentationSec = 0;

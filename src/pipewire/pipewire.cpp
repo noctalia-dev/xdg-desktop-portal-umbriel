@@ -1,6 +1,7 @@
 #include "pipewire/pipewire.h"
 
 #include "loop/loop.h"
+#include "wayland/capture_transform.h"
 
 #include <algorithm>
 #include <array>
@@ -168,16 +169,26 @@ namespace xdpu {
   struct PipeWireStream::Impl {
     struct StreamBuffer {
       CaptureBuffer capture;
+      CaptureBuffer delivery;
       gbm_bo* bo = nullptr;
       std::vector<int> planeFds;
       std::vector<DmabufPlane> planes;
       int fd = -1;
       void* map = nullptr;
       size_t mapSize = 0;
+      int captureFd = -1;
+      void* captureMap = nullptr;
+      size_t captureMapSize = 0;
 
       ~StreamBuffer() {
         if (capture.wlBuffer != nullptr) {
           wl_buffer_destroy(capture.wlBuffer);
+        }
+        if (captureMap != nullptr) {
+          munmap(captureMap, captureMapSize);
+        }
+        if (captureFd >= 0) {
+          close(captureFd);
         }
         if (map != nullptr && map != MAP_FAILED) {
           munmap(map, mapSize);
@@ -197,8 +208,9 @@ namespace xdpu {
     };
 
     Impl(uint32_t width, uint32_t height, CaptureConstraints constraints, uint32_t maxFps, bool cursorMetadata)
-        : width(width), height(height), constraints(std::move(constraints)), maxFps(maxFps),
-          cursorMetadata(cursorMetadata) {}
+        : width(displaySize(width, height, constraints.transform).width),
+          height(displaySize(width, height, constraints.transform).height), constraints(std::move(constraints)),
+          maxFps(maxFps), cursorMetadata(cursorMetadata) {}
     uint32_t width = 0;
     uint32_t height = 0;
     CaptureConstraints constraints;
@@ -285,6 +297,76 @@ namespace xdpu {
       return firstSupportedChoice(constraints);
     }
 
+    bool configureCaptureBuffer(StreamBuffer& allocation, const CaptureConstraints& target) {
+      const BufferSize size = displaySize(target.bufferWidth, target.bufferHeight, target.transform);
+      if (target.transform > 7
+          || size.width != allocation.delivery.width
+          || size.height != allocation.delivery.height) {
+        return false;
+      }
+      CaptureBuffer capture = allocation.delivery;
+      capture.wlBuffer = nullptr;
+      capture.transform = target.transform;
+      capture.width = target.bufferWidth;
+      capture.height = target.bufferHeight;
+      int fd = -1;
+      void* map = nullptr;
+      size_t mapSize = 0;
+      if (target.transform != 0) {
+        if (allocation.bo != nullptr || capture.width > UINT32_MAX / 4U) {
+          return false;
+        }
+        capture.stride = capture.width * 4U;
+        mapSize = static_cast<size_t>(capture.stride) * capture.height;
+        fd = createMemfd("umbriel-capture-shm", mapSize);
+        if (fd < 0) {
+          return false;
+        }
+        map = mmap(nullptr, mapSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED) {
+          close(fd);
+          return false;
+        }
+        capture.data = map;
+        capture.size = mapSize;
+      }
+
+      if (WaylandContext* wayland = WaylandContext::defaultContext()) {
+        capture.wlBuffer = allocation.bo != nullptr
+            ? wayland->createDmabufBuffer(
+                  capture.width, capture.height, capture.format, gbm_bo_get_modifier(allocation.bo), allocation.planes
+              )
+            : wayland->createShmBuffer(
+                  capture.width, capture.height, capture.format, capture.stride, fd >= 0 ? fd : allocation.fd,
+                  capture.size
+              );
+        if (capture.wlBuffer == nullptr) {
+          if (map != nullptr) {
+            munmap(map, mapSize);
+          }
+          if (fd >= 0) {
+            close(fd);
+          }
+          return false;
+        }
+      }
+
+      if (allocation.capture.wlBuffer != nullptr) {
+        wl_buffer_destroy(allocation.capture.wlBuffer);
+      }
+      if (allocation.captureMap != nullptr) {
+        munmap(allocation.captureMap, allocation.captureMapSize);
+      }
+      if (allocation.captureFd >= 0) {
+        close(allocation.captureFd);
+      }
+      allocation.capture = capture;
+      allocation.captureFd = fd;
+      allocation.captureMap = map;
+      allocation.captureMapSize = mapSize;
+      return true;
+    }
+
     std::unique_ptr<StreamBuffer> allocateDmabuf(const FormatChoice& choice) {
       if (!ensureGbmDevice()) {
         return nullptr;
@@ -323,13 +405,9 @@ namespace xdpu {
       }
       allocation->capture.stride = allocation->planes.front().stride;
       allocation->capture.size = static_cast<size_t>(allocation->capture.stride) * height;
-
-      if (WaylandContext* wayland = WaylandContext::defaultContext()) {
-        allocation->capture.wlBuffer =
-            wayland->createDmabufBuffer(width, height, choice.drm, choice.modifier, allocation->planes);
-        if (allocation->capture.wlBuffer == nullptr) {
-          return nullptr;
-        }
+      allocation->delivery = allocation->capture;
+      if (!configureCaptureBuffer(*allocation, constraints)) {
+        return nullptr;
       }
       return allocation;
     }
@@ -360,12 +438,9 @@ namespace xdpu {
       allocation->capture.stride = stride;
       allocation->capture.data = map;
       allocation->capture.size = size;
-
-      if (WaylandContext* wayland = WaylandContext::defaultContext()) {
-        allocation->capture.wlBuffer = wayland->createShmBuffer(width, height, choice.drm, stride, fd, size);
-        if (allocation->capture.wlBuffer == nullptr) {
-          return nullptr;
-        }
+      allocation->delivery = allocation->capture;
+      if (!configureCaptureBuffer(*allocation, constraints)) {
+        return nullptr;
       }
       return allocation;
     }
@@ -403,12 +478,12 @@ namespace xdpu {
         data.flags = SPA_DATA_FLAG_READABLE | SPA_DATA_FLAG_MAPPABLE;
         data.fd = allocation.fd;
         data.mapoffset = 0;
-        data.maxsize = static_cast<uint32_t>(allocation.capture.size);
+        data.maxsize = static_cast<uint32_t>(allocation.delivery.size);
         data.data = allocation.map;
         if (data.chunk != nullptr) {
           data.chunk->offset = 0;
-          data.chunk->size = static_cast<uint32_t>(allocation.capture.size);
-          data.chunk->stride = static_cast<int32_t>(allocation.capture.stride);
+          data.chunk->size = static_cast<uint32_t>(allocation.delivery.size);
+          data.chunk->stride = static_cast<int32_t>(allocation.delivery.stride);
           data.chunk->flags = SPA_CHUNK_FLAG_NONE;
         }
       }
@@ -548,9 +623,11 @@ namespace xdpu {
 
     PodList buildFormatParams(PipeWireStream::Impl& impl) {
       PodList list;
-      for (const CaptureConstraints::DmabufFormat& format : impl.constraints.dmabufFormats) {
-        if (auto spa = drmToSpa(format.format); spa && impl.supportsDmabuf(format.format, format.modifier)) {
-          list.addVideoFormat(impl.width, impl.height, *spa, format.modifier, impl.maxFps);
+      if (impl.constraints.transform == 0) {
+        for (const CaptureConstraints::DmabufFormat& format : impl.constraints.dmabufFormats) {
+          if (auto spa = drmToSpa(format.format); spa && impl.supportsDmabuf(format.format, format.modifier)) {
+            list.addVideoFormat(impl.width, impl.height, *spa, format.modifier, impl.maxFps);
+          }
         }
       }
       for (uint32_t shmFormat : impl.constraints.shmFormats) {
@@ -594,6 +671,11 @@ namespace xdpu {
       }
 
       PipeWireStream::Impl& impl = *stream->implForCallbacks();
+      if (info.size.width != impl.width
+          || info.size.height != impl.height
+          || (impl.constraints.transform != 0 && (info.flags & SPA_VIDEO_FLAG_MODIFIER) != 0)) {
+        return;
+      }
       impl.negotiated.drm = *drm;
       impl.negotiated.spa = info.format;
       impl.negotiated.dmabuf = (info.flags & SPA_VIDEO_FLAG_MODIFIER) != 0;
@@ -624,11 +706,12 @@ namespace xdpu {
 
       auto allocation = choice.dmabuf ? impl.allocateDmabuf(choice) : impl.allocateShm(choice);
       if (allocation == nullptr) {
+        pw_stream_set_error(impl.stream, -EIO, "Unable to allocate capture buffers");
         return;
       }
 
       impl.configureSpaData(buffer, *allocation);
-      buffer->size = allocation->capture.size;
+      buffer->size = allocation->delivery.size;
       buffer->user_data = allocation.release();
       impl.buffers.insert(buffer);
 
@@ -725,7 +808,7 @@ namespace xdpu {
   std::unique_ptr<PipeWireStream> PipeWireContext::createStream(
       uint32_t width, uint32_t height, const CaptureConstraints& constraints, uint32_t maxFps, bool cursorMetadata
   ) {
-    if (m_impl->core == nullptr || width == 0 || height == 0) {
+    if (m_impl->core == nullptr || width == 0 || height == 0 || constraints.transform > 7) {
       return nullptr;
     }
 
@@ -790,7 +873,8 @@ namespace xdpu {
       return;
     }
     if (buf->buffer != nullptr && buf->buffer->datas != nullptr) {
-      const CaptureBuffer* capture = captureBuffer(buf);
+      const auto* allocation = static_cast<const Impl::StreamBuffer*>(buf->user_data);
+      const CaptureBuffer& delivery = allocation->delivery;
       for (uint32_t index = 0; index < buf->buffer->n_datas; ++index) {
         spa_data& data = buf->buffer->datas[index];
         if (data.chunk == nullptr) {
@@ -800,14 +884,52 @@ namespace xdpu {
           data.chunk->size = 9;
         } else {
           data.chunk->offset = 0;
-          data.chunk->size =
-              capture != nullptr ? static_cast<uint32_t>(capture->stride * capture->height) : data.maxsize;
-          data.chunk->stride = capture != nullptr ? static_cast<int32_t>(capture->stride) : 0;
+          data.chunk->size = static_cast<uint32_t>(delivery.size);
+          data.chunk->stride = static_cast<int32_t>(delivery.stride);
         }
         data.chunk->flags = SPA_CHUNK_FLAG_NONE;
       }
     }
     pw_stream_queue_buffer(m_impl->stream, buf);
+  }
+
+  void PipeWireStream::discardBuffer(pw_buffer* buffer) {
+    if (m_impl->stream == nullptr || !connected() || !ownsBuffer(buffer)) {
+      return;
+    }
+    if (buffer->buffer != nullptr) {
+      if (auto* header = static_cast<spa_meta_header*>(
+              spa_buffer_find_meta_data(buffer->buffer, SPA_META_Header, sizeof(spa_meta_header))
+          )) {
+        header->flags = SPA_META_HEADER_FLAG_CORRUPTED;
+      }
+      for (uint32_t index = 0; index < buffer->buffer->n_datas; ++index) {
+        spa_chunk* chunk = buffer->buffer->datas[index].chunk;
+        if (chunk != nullptr) {
+          chunk->size = 0;
+          chunk->flags = SPA_CHUNK_FLAG_CORRUPTED;
+        }
+      }
+    }
+    pw_stream_queue_buffer(m_impl->stream, buffer);
+  }
+
+  bool PipeWireStream::prepareFrame(pw_buffer* buffer, uint32_t transform) {
+    if (!ownsBuffer(buffer) || transform > 7) {
+      return false;
+    }
+    auto& allocation = *static_cast<Impl::StreamBuffer*>(buffer->user_data);
+    const CaptureBuffer& capture = allocation.capture;
+    if (transform != capture.transform) {
+      return false;
+    }
+    if (transform == 0) {
+      return true;
+    }
+    return transformPacked32(
+        capture.data, capture.size, capture.width, capture.height, capture.stride, transform, allocation.delivery.data,
+        allocation.delivery.size, allocation.delivery.stride
+    );
   }
 
   void PipeWireStream::setCursorMetadata(pw_buffer* buffer, const CursorMetadata* metadata) {
@@ -867,7 +989,10 @@ namespace xdpu {
   }
 
   bool PipeWireStream::reconfigure(const CaptureConstraints& constraints) {
-    if (m_impl->stream == nullptr || constraints.bufferWidth == 0 || constraints.bufferHeight == 0) {
+    if (m_impl->stream == nullptr
+        || constraints.bufferWidth == 0
+        || constraints.bufferHeight == 0
+        || constraints.transform > 7) {
       return false;
     }
 
@@ -876,10 +1001,16 @@ namespace xdpu {
     CaptureConstraints previousConstraints = m_impl->constraints;
     const FormatChoice previousNegotiated = m_impl->negotiated;
 
-    m_impl->width = constraints.bufferWidth;
-    m_impl->height = constraints.bufferHeight;
+    const BufferSize size = displaySize(constraints.bufferWidth, constraints.bufferHeight, constraints.transform);
+    const bool reuse = previousNegotiated.valid
+        && !previousNegotiated.dmabuf
+        && size.width == previousWidth
+        && size.height == previousHeight
+        && std::ranges::find(constraints.shmFormats, previousNegotiated.drm) != constraints.shmFormats.end();
+    m_impl->width = size.width;
+    m_impl->height = size.height;
     m_impl->constraints = constraints;
-    m_impl->negotiated = {};
+    m_impl->negotiated = reuse ? previousNegotiated : FormatChoice{};
 
     PodList params = buildFormatParams(*m_impl);
     if (params.pods.empty()) {
@@ -898,6 +1029,19 @@ namespace xdpu {
       m_impl->constraints = std::move(previousConstraints);
       m_impl->negotiated = previousNegotiated;
       return false;
+    }
+    if (reuse) {
+      // PipeWire can keep the negotiated format and all buffers for a 180-degree
+      // rotation. Rebuild only the capture side instead of waiting for add_buffer.
+      for (pw_buffer* buffer : m_impl->buffers) {
+        auto* allocation = static_cast<Impl::StreamBuffer*>(buffer->user_data);
+        if (allocation == nullptr || !m_impl->configureCaptureBuffer(*allocation, constraints)) {
+          return false;
+        }
+      }
+      if (!m_impl->buffers.empty() && onAddBuffer) {
+        onAddBuffer(*m_impl->buffers.begin());
+      }
     }
     return true;
   }
@@ -945,11 +1089,29 @@ namespace xdpu {
   }
 
   CaptureBuffer* PipeWireStream::captureBuffer(pw_buffer* buffer) const {
-    if (buffer == nullptr || buffer->user_data == nullptr) {
+    if (!ownsBuffer(buffer) || buffer->user_data == nullptr) {
       return nullptr;
     }
     auto* streamBuffer = static_cast<Impl::StreamBuffer*>(buffer->user_data);
     return &streamBuffer->capture;
+  }
+
+  bool PipeWireStream::bufferMatches(pw_buffer* buffer, const CaptureConstraints& constraints) const {
+    const CaptureBuffer* capture = captureBuffer(buffer);
+    if (capture == nullptr
+        || capture->width != constraints.bufferWidth
+        || capture->height != constraints.bufferHeight
+        || capture->transform != constraints.transform) {
+      return false;
+    }
+    const auto* allocation = static_cast<const Impl::StreamBuffer*>(buffer->user_data);
+    if (allocation->bo == nullptr) {
+      return std::ranges::find(constraints.shmFormats, capture->format) != constraints.shmFormats.end();
+    }
+    return constraints.transform == 0
+        && std::ranges::any_of(constraints.dmabufFormats, [&](const CaptureConstraints::DmabufFormat& format) {
+             return format.format == capture->format && format.modifier == gbm_bo_get_modifier(allocation->bo);
+           });
   }
 
   bool PipeWireStream::ownsBuffer(pw_buffer* buffer) const {

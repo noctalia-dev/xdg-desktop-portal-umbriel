@@ -49,6 +49,8 @@ namespace xdpu {
 
     struct pw_buffer* dequeueBuffer();
     void queueBuffer(struct pw_buffer* buf);
+    void discardBuffer(struct pw_buffer* buf);
+    bool prepareFrame(struct pw_buffer* buffer, uint32_t transform);
     bool reconfigure(const CaptureConstraints& constraints);
     bool setActive(bool active);
     void disconnect();
@@ -58,6 +60,7 @@ namespace xdpu {
     void triggerProcess();
 
     CaptureBuffer* captureBuffer(struct pw_buffer* buffer) const;
+    bool bufferMatches(struct pw_buffer* buffer, const CaptureConstraints& constraints) const;
     void setCursorMetadata(struct pw_buffer* buffer, const CursorMetadata* metadata);
     bool ownsBuffer(struct pw_buffer* buffer) const;
     Impl* implForCallbacks() const;

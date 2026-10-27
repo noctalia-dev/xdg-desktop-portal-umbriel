@@ -43,6 +43,8 @@ namespace xdpu {
       OutputInfo info;
       uint32_t registryName = 0;
       bool hasName = false;
+      uint32_t transform = 0;
+      uint32_t pendingTransform = 0;
     };
 
     struct ToplevelState {
@@ -75,6 +77,7 @@ namespace xdpu {
     bool disconnected = false;
     uint32_t nextSyntheticOutput = 1;
 
+    std::vector<CaptureSession*> captures;
     std::vector<OutputInfo> outputs;
     std::vector<ToplevelInfo> toplevels;
     std::optional<std::string> focusedOutput;
@@ -327,15 +330,20 @@ namespace xdpu {
     uint32_t consecutiveFailures = 0;
     bool pendingDamage = true;
     CursorMetadata metadata;
+    BufferPoint pendingHotspot;
   };
 
   WaylandContext::CaptureSession::CaptureSession(
       WaylandContext::Impl& impl, ext_image_capture_source_v1* source, ext_image_copy_capture_session_v1* session,
       ConstraintsCallback constraintsCb
   )
-      : impl(impl), source(source), session(session), constraintsCb(std::move(constraintsCb)) {}
+      : impl(impl), source(source), session(session), constraintsCb(std::move(constraintsCb)) {
+    impl.captures.push_back(this);
+  }
 
   WaylandContext::CaptureSession::~CaptureSession() {
+    frameLifetime.reset();
+    std::erase(impl.captures, this);
     cursor.reset();
     if (session != nullptr) {
       ext_image_copy_capture_session_v1_destroy(session);
@@ -368,7 +376,6 @@ namespace xdpu {
       (void)subpixel;
       (void)make;
       (void)model;
-      (void)transform;
       auto* impl = static_cast<WaylandContext::Impl*>(data);
       auto* state = impl->findOutput(output);
       if (state == nullptr) {
@@ -376,6 +383,9 @@ namespace xdpu {
       }
       state->info.x = x;
       state->info.y = y;
+      if (transform >= 0 && transform <= WL_OUTPUT_TRANSFORM_FLIPPED_270) {
+        state->pendingTransform = static_cast<uint32_t>(transform);
+      }
     }
 
     void onOutputMode(void* data, wl_output* output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
@@ -400,6 +410,30 @@ namespace xdpu {
       }
       state->info.name = state->info.name.empty() ? "output-" + std::to_string(state->registryName) : state->info.name;
       impl->rebuildOutputs();
+      if (state->transform == state->pendingTransform) {
+        return;
+      }
+      state->transform = state->pendingTransform;
+      const uint32_t transform = state->transform;
+      // A constraints callback may destroy its capture or another capture.
+      // Recheck registry membership before using each pointer from the snapshot.
+      const auto captures = impl->captures;
+      for (auto* capture : captures) {
+        if (std::ranges::find(impl->captures, capture) == impl->captures.end() || capture->output != output) {
+          continue;
+        }
+        ++capture->transformRevision;
+        capture->pendingConstraints.transform = transform;
+        if (capture->constraints.transform == transform) {
+          continue;
+        }
+        capture->constraints.transform = transform;
+        if (capture->constraints.bufferWidth != 0 && capture->constraints.bufferHeight != 0 && capture->constraintsCb) {
+          const auto constraints = capture->constraints;
+          const auto callback = capture->constraintsCb;
+          callback(constraints);
+        }
+      }
     }
 
     void onOutputScale(void* data, wl_output* output, int32_t factor) {
@@ -550,6 +584,7 @@ namespace xdpu {
       auto* capture = static_cast<WaylandContext::CaptureSession*>(data);
       capture->constraints = std::move(capture->pendingConstraints);
       capture->pendingConstraints = {};
+      capture->pendingConstraints.transform = capture->constraints.transform;
       if (capture->constraintsCb) {
         capture->constraintsCb(capture->constraints);
       }
@@ -575,7 +610,14 @@ namespace xdpu {
     };
 
     void onFrameTransform(void* data, ext_image_copy_capture_frame_v1* /*frame*/, uint32_t transform) {
-      static_cast<WaylandContext::CaptureFrame*>(data)->buffer.transform = transform;
+      auto* state = static_cast<WaylandContext::CaptureFrame*>(data);
+      state->buffer.transform = transform;
+      // wl_output is an initial hint. The captured frame is authoritative,
+      // except when a newer output update already invalidated this request.
+      if (!state->ownerLifetime.expired() && state->owner->transformRevision == state->transformRevision) {
+        state->owner->constraints.transform = transform;
+        state->owner->pendingConstraints.transform = transform;
+      }
     }
 
     void onFrameDamage(
@@ -593,7 +635,7 @@ namespace xdpu {
 
     void onFrameReady(void* data, ext_image_copy_capture_frame_v1* /*frame*/) {
       auto* state = static_cast<WaylandContext::CaptureFrame*>(data);
-      // Grab everything we need before touching state — the callback may delete it.
+      // Grab everything we need before touching state, the callback may delete it.
       auto* proxy = state->frame;
       auto cb = std::move(state->onReady);
       auto buf = state->buffer;
@@ -729,16 +771,32 @@ namespace xdpu {
       return true;
     }
 
-    void cursorFrameReady(WaylandContext::CursorCapture& cursor) {
+    void cursorFrameReady(WaylandContext::CursorCapture& cursor, const CaptureBuffer& buffer) {
       cursor.pendingFrame.reset();
       CursorMetadata& metadata = cursor.metadata;
-      const CaptureConstraints& constraints = cursor.imageCapture->constraints;
-      metadata.width = constraints.bufferWidth;
-      metadata.height = constraints.bufferHeight;
-      metadata.stride = cursor.stride;
+      const auto dimensions = displaySize(buffer.width, buffer.height, buffer.transform);
+      metadata.width = dimensions.width;
+      metadata.height = dimensions.height;
+      metadata.stride = dimensions.width * 4;
       metadata.format = cursor.format;
-      metadata.pixels.resize(cursor.mapSize);
-      std::memcpy(metadata.pixels.data(), cursor.mapping, cursor.mapSize);
+      metadata.pixels.resize(static_cast<size_t>(metadata.stride) * metadata.height);
+      if (!transformPacked32(
+              cursor.mapping, cursor.mapSize, buffer.width, buffer.height, cursor.stride, buffer.transform,
+              metadata.pixels.data(), metadata.pixels.size(), metadata.stride
+          )) {
+        metadata.visible = false;
+        return;
+      }
+      const auto hotspot = bufferToDisplay(
+          cursor.pendingHotspot.x, cursor.pendingHotspot.y, static_cast<int32_t>(buffer.width),
+          static_cast<int32_t>(buffer.height), buffer.transform
+      );
+      if (hotspot.x < INT32_MIN || hotspot.x > INT32_MAX || hotspot.y < INT32_MIN || hotspot.y > INT32_MAX) {
+        metadata.visible = false;
+        return;
+      }
+      metadata.hotspotX = static_cast<int32_t>(hotspot.x);
+      metadata.hotspotY = static_cast<int32_t>(hotspot.y);
 
       // Keep one damage-less frame pending: fires when the cursor image
       // changes, without forcing output redraws like damaged frames do.
@@ -780,7 +838,7 @@ namespace xdpu {
       cursor.pendingDamage = damage;
       cursor.pendingFrame = cursor.owner.impl.owner.captureFrame(
           *cursor.imageCapture, cursor.buffer, damage,
-          [&cursor](CaptureBuffer&, uint64_t, uint32_t) { cursorFrameReady(cursor); },
+          [&cursor](CaptureBuffer& buffer, uint64_t, uint32_t) { cursorFrameReady(cursor, buffer); },
           [&cursor](CaptureFailureReason reason) { cursorFrameFailed(cursor, reason); }
       );
     }
@@ -805,8 +863,7 @@ namespace xdpu {
 
     void onCursorHotspot(void* data, ext_image_copy_capture_cursor_session_v1*, int32_t x, int32_t y) {
       auto* cursor = static_cast<WaylandContext::CursorCapture*>(data);
-      cursor->metadata.hotspotX = x;
-      cursor->metadata.hotspotY = y;
+      cursor->pendingHotspot = {x, y};
       requestCursorFrame(*cursor);
     }
 
@@ -1048,6 +1105,11 @@ namespace xdpu {
           if (iter->second->xdgOutput != nullptr) {
             zxdg_output_v1_destroy(iter->second->xdgOutput);
           }
+          for (auto* capture : impl->captures) {
+            if (capture->output == iter->first) {
+              capture->output = nullptr;
+            }
+          }
           wl_output_destroy(iter->first);
           impl->outputStates.erase(iter);
           impl->rebuildOutputs();
@@ -1196,7 +1258,13 @@ namespace xdpu {
 
     auto* source =
         ext_output_image_capture_source_manager_v1_create_source(m_impl->outputSourceManager, output->output);
-    return makeCaptureSession(*m_impl, source, cursorMode, std::move(constraintsCb));
+    auto capture = makeCaptureSession(*m_impl, source, cursorMode, std::move(constraintsCb));
+    if (capture != nullptr) {
+      capture->output = output->output;
+      capture->constraints.transform = output->transform;
+      capture->pendingConstraints.transform = output->transform;
+    }
+    return capture;
   }
 
   std::unique_ptr<WaylandContext::CaptureSession> WaylandContext::createToplevelCapture(
@@ -1245,9 +1313,13 @@ namespace xdpu {
 
     auto state = std::make_unique<CaptureFrame>();
     state->frame = frame;
+    state->owner = &session;
+    state->ownerLifetime = session.frameLifetime;
+    state->transformRevision = session.transformRevision;
     state->buffer.wlBuffer = buffer;
     state->buffer.width = session.constraints.bufferWidth;
     state->buffer.height = session.constraints.bufferHeight;
+    state->buffer.transform = session.constraints.transform;
     state->onReady = std::move(onReady);
     state->onFailed = std::move(onFailed);
 

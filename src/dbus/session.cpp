@@ -63,7 +63,7 @@ namespace xdpu {
         pendingFrame.reset();
         frameInFlight = false;
         if (inFlightBuffer != nullptr && stream && stream->connected() && stream->ownsBuffer(inFlightBuffer)) {
-          stream->queueBuffer(inFlightBuffer);
+          stream->discardBuffer(inFlightBuffer);
         }
         inFlightBuffer = nullptr;
       }
@@ -164,7 +164,7 @@ namespace xdpu {
         if (stopped) {
           return;
         }
-        // Every done event settles a pending constraints-wait — dropping a
+        // Every done event settles a pending constraints-wait; dropping a
         // redundant one here would leave the stream waiting forever.
         waitingForConstraints = false;
         if (newConstraints == constraints) {
@@ -199,16 +199,20 @@ namespace xdpu {
         if (stopped || !reconfiguring || !stream) {
           return;
         }
-        const CaptureBuffer* added = stream->captureBuffer(buffer);
-        if (added == nullptr
-            || added->width != reconfigureTarget.bufferWidth
-            || added->height != reconfigureTarget.bufferHeight) {
+        if (!stream->bufferMatches(buffer, reconfigureTarget)) {
           return;
         }
         reconfiguring = false;
         if (constraintsDirty) {
           reconfigureStream();
         } else {
+          scheduleProcess(1);
+        }
+      }
+
+      void bufferRemoved(pw_buffer* buffer) {
+        if (inFlightBuffer == buffer) {
+          cancelFrame();
           scheduleProcess(1);
         }
       }
@@ -226,8 +230,10 @@ namespace xdpu {
         }
 
         CaptureBuffer* captureBuffer = stream->captureBuffer(pwBuffer);
-        if (captureBuffer == nullptr || captureBuffer->wlBuffer == nullptr) {
-          stream->queueBuffer(pwBuffer);
+        if (captureBuffer == nullptr
+            || captureBuffer->wlBuffer == nullptr
+            || !stream->bufferMatches(pwBuffer, constraints)) {
+          stream->discardBuffer(pwBuffer);
           scheduleProcess(1);
           return;
         }
@@ -237,9 +243,9 @@ namespace xdpu {
         std::weak_ptr<StreamState> weak = shared_from_this();
         pendingFrame = wayland->captureFrame(
             *capture, captureBuffer->wlBuffer, /*damageBuffer=*/true,
-            [weak, pwBuffer](CaptureBuffer&, uint64_t sec, uint32_t nsec) {
+            [weak, pwBuffer](CaptureBuffer& frame, uint64_t sec, uint32_t nsec) {
               if (auto self = weak.lock()) {
-                self->frameReady(pwBuffer, sec, nsec);
+                self->frameReady(pwBuffer, frame.transform, sec, nsec);
               }
             },
             [weak, pwBuffer](CaptureFailureReason reason) {
@@ -255,13 +261,30 @@ namespace xdpu {
         }
       }
 
-      void frameReady(pw_buffer* pwBuffer, uint64_t sec, uint32_t nsec) {
+      void frameReady(pw_buffer* pwBuffer, uint32_t transform, uint64_t sec, uint32_t nsec) {
         pendingFrame.reset(); // frame proxy already destroyed by the callback
         frameInFlight = false;
         inFlightBuffer = nullptr;
         // A stop can race with the Wayland ready event.  Never return a
         // buffer to a PipeWire stream after it has been disconnected.
         if (stopped || !stream || !stream->connected() || !stream->ownsBuffer(pwBuffer)) {
+          return;
+        }
+
+        // Constraints can change while a frame is being copied. A frame from
+        // the previous orientation must never escape through the new stream.
+        if (constraintsDirty || transform != constraints.transform) {
+          stream->discardBuffer(pwBuffer);
+          if (!constraintsDirty) {
+            constraints.transform = transform;
+            constraintsDirty = true;
+          }
+          reconfigureStream();
+          return;
+        }
+        if (!stream->prepareFrame(pwBuffer, transform)) {
+          stream->discardBuffer(pwBuffer);
+          scheduleProcess(1);
           return;
         }
 
@@ -289,7 +312,7 @@ namespace xdpu {
         frameInFlight = false;
         inFlightBuffer = nullptr;
         if (!stopped && stream && stream->connected() && stream->ownsBuffer(pwBuffer)) {
-          stream->queueBuffer(pwBuffer);
+          stream->discardBuffer(pwBuffer);
         }
         if (reason == CaptureFailureReason::Stopped) {
           captureStopped();
@@ -329,6 +352,7 @@ namespace xdpu {
         capture.reset();
         waitingForConstraints = false;
         constraintsDirty = false;
+        reconfiguring = false;
 
         if (!target) {
           if (stream) {
@@ -486,7 +510,11 @@ namespace xdpu {
         streamState->bufferAdded(buffer);
       }
     };
-    state->stream->onRemoveBuffer = [](pw_buffer*) {};
+    state->stream->onRemoveBuffer = [weak](pw_buffer* buffer) {
+      if (auto streamState = weak.lock()) {
+        streamState->bufferRemoved(buffer);
+      }
+    };
     // createStream() may reach STREAMING before these callbacks are installed.
     // Start capture directly so the first buffer exists before graph scheduling.
     state->processRequest();
