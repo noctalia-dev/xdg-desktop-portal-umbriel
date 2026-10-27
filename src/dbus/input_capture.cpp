@@ -12,7 +12,9 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <print>
 #include <sdbus-c++/sdbus-c++.h>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -29,11 +31,15 @@ namespace xdpu {
     constexpr char kSessionInterface[] = "org.freedesktop.impl.portal.Session";
     constexpr char kFrontend[] = "org.freedesktop.portal.Desktop";
     constexpr uint32_t kCapabilities = 3;
+    constexpr char kRestoreVendor[] = "umbriel-input-capture";
+    constexpr uint32_t kRestoreVersion = 1;
+    constexpr size_t kRestoreTokenLimit = 4096;
     constexpr size_t kSessionLimit = 64;
     constexpr size_t kBarrierLimit = 1024;
     using Zone = sdbus::Struct<uint32_t, uint32_t, int32_t, int32_t>;
     using Position = sdbus::Struct<int32_t, int32_t, int32_t, int32_t>;
     using CursorPosition = sdbus::Struct<double, double>;
+    using RestoreData = sdbus::Struct<std::string, uint32_t, sdbus::Variant>;
     using FdResponse = sdbus::Result<sdbus::UnixFd>;
 
     template <typename T> std::optional<T> option(const PortalResults& options, const char* key) {
@@ -46,6 +52,37 @@ namespace xdpu {
 
     sdbus::Error failure(const char* message) {
       return sdbus::Error{sdbus::Error::Name{"org.freedesktop.portal.Error.Failed"}, message};
+    }
+
+    std::string applicationInstance(std::string_view path) {
+      constexpr std::string_view prefix = "/org/freedesktop/portal/desktop/session/";
+      if (!path.starts_with(prefix)) {
+        return {};
+      }
+      path.remove_prefix(prefix.size());
+      const size_t separator = path.find('/');
+      if (separator == std::string_view::npos || separator == 0 || separator > 255) {
+        return {};
+      }
+      const std::string_view component = path.substr(0, separator);
+      bool needDigit = true;
+      bool hasSeparator = false;
+      for (const char character : component) {
+        if (character >= '0' && character <= '9') {
+          needDigit = false;
+        } else if (character == '_' && !needDigit) {
+          hasSeparator = true;
+          needDigit = true;
+        } else {
+          return {};
+        }
+      }
+      if (needDigit || !hasSeparator) {
+        return {};
+      }
+      std::string sender = ":" + std::string(component);
+      std::ranges::replace(sender, '_', '.');
+      return sender;
     }
   } // namespace
 
@@ -60,6 +97,9 @@ namespace xdpu {
       std::vector<Zone> zones;
       std::vector<uint32_t> failedBarriers;
       sdbus::UnixFd fd;
+      uint32_t requestedPersistMode = 0;
+      uint32_t grantedPersistMode = 0;
+      std::string restoreToken;
       int timer = 0;
     };
 
@@ -68,6 +108,7 @@ namespace xdpu {
       std::string path;
       std::string appId;
       std::string sender;
+      std::string instance;
       std::unique_ptr<sdbus::IObject> object;
       umbriel_input_capture_session_v1* capture = nullptr;
       std::map<uint32_t, std::unique_ptr<Operation>> operations;
@@ -78,7 +119,8 @@ namespace xdpu {
       bool closed = false;
 
       Session(Impl& portal, std::string path, std::string appId, std::string sender)
-          : portal(portal), path(std::move(path)), appId(std::move(appId)), sender(std::move(sender)) {}
+          : portal(portal), path(std::move(path)), appId(std::move(appId)), sender(std::move(sender)),
+            instance(applicationInstance(this->path)) {}
 
       ~Session() {
         if (capture != nullptr) {
@@ -219,6 +261,19 @@ namespace xdpu {
         if (status == 0) {
           results.emplace("capabilities", sdbus::Variant{capabilities & kCapabilities});
           results.emplace("clipboard_enabled", sdbus::Variant{false});
+          const auto found = session.operations.find(id);
+          if (found != session.operations.end()
+              && found->second->kind == OperationKind::Start
+              && found->second->grantedPersistMode != 0
+              && !found->second->restoreToken.empty()) {
+            results.emplace("persist_mode", sdbus::Variant{found->second->grantedPersistMode});
+            results.emplace(
+                "restore_data",
+                sdbus::Variant{
+                    RestoreData{kRestoreVendor, kRestoreVersion, sdbus::Variant{found->second->restoreToken}}
+                }
+            );
+          }
         }
         session.finish(id, status, std::move(results));
         if (status != 0) {
@@ -310,6 +365,27 @@ namespace xdpu {
       }
       static void onClosed(void* data, umbriel_input_capture_session_v1*) { static_cast<Session*>(data)->close(true); }
 
+      static void
+      onGrant(void* data, umbriel_input_capture_session_v1*, uint32_t id, uint32_t persistMode, const char* token) {
+        auto& session = *static_cast<Session*>(data);
+        const auto found = session.operations.find(id);
+        if (found == session.operations.end()
+            || found->second->kind != OperationKind::Start
+            || persistMode == 0
+            || persistMode > found->second->requestedPersistMode
+            || (persistMode == 1 && session.instance.empty())
+            || token == nullptr
+            || *token == '\0'
+            || std::string_view{token}.size() > kRestoreTokenLimit) {
+          return;
+        }
+        found->second->grantedPersistMode = persistMode;
+        found->second->restoreToken = token;
+        if (persistMode == 1) {
+          session.portal.transientScopes.insert(session.instance);
+        }
+      }
+
       static constexpr umbriel_input_capture_session_v1_listener kListener{
           .started = onStarted,
           .zone = onZone,
@@ -323,6 +399,7 @@ namespace xdpu {
           .disabled = onDisabled,
           .zones_changed = onZonesChanged,
           .closed = onClosed,
+          .grant = onGrant,
       };
     };
 
@@ -337,6 +414,7 @@ namespace xdpu {
     uint32_t managerName = 0;
     std::map<std::string, std::shared_ptr<Session>> sessions;
     std::vector<int> deferred;
+    std::set<std::string> transientScopes;
 
     Impl(Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, WaylandContext& wayland)
         : loop(loop), connection(connection), object(object), wayland(wayland) {
@@ -353,6 +431,9 @@ namespace xdpu {
             if (name == kFrontend && owner != frontendOwner) {
               frontendOwner = owner;
               closeAll();
+              expireScopes();
+            } else if (owner.empty()) {
+              expireScope(name);
             }
           });
       try {
@@ -368,6 +449,7 @@ namespace xdpu {
 
     ~Impl() {
       closeAll();
+      expireScopes();
       for (const int timer : deferred) {
         loop.removeTimer(timer);
       }
@@ -452,30 +534,87 @@ namespace xdpu {
       }
     }
 
+    void expireScope(const std::string& scope) {
+      bool known = transientScopes.erase(scope) != 0;
+      for (const auto& [path, session] : sessions) {
+        (void)path;
+        if (session->instance == scope) {
+          known = true;
+          session->close(true);
+        }
+      }
+      if (!known || manager == nullptr) {
+        return;
+      }
+      umbriel_input_capture_manager_v1_expire_scope(manager, scope.c_str());
+      wayland.flush();
+    }
+
+    void expireScopes() {
+      auto scopes = std::exchange(transientScopes, {});
+      for (const auto& [path, session] : sessions) {
+        (void)path;
+        if (!session->instance.empty()) {
+          scopes.insert(session->instance);
+        }
+      }
+      if (manager != nullptr) {
+        for (const auto& scope : scopes) {
+          umbriel_input_capture_manager_v1_expire_scope(manager, scope.c_str());
+        }
+        wayland.flush();
+      }
+    }
+
     void start(
         PortalResponse&& result, const sdbus::ObjectPath& handle, const std::shared_ptr<Session>& session,
         const PortalResults& options
     ) {
       const uint32_t requested = option<uint32_t>(options, "capabilities").value_or(0);
       const uint32_t capabilities = requested & kCapabilities;
-      if (session->starting || session->started || capabilities == 0) {
+      const auto requestedPersistMode = option<uint32_t>(options, "persist_mode");
+      if (session->starting
+          || session->started
+          || capabilities == 0
+          || (options.contains("persist_mode") && !requestedPersistMode)
+          || requestedPersistMode.value_or(0) > 2) {
         result.returnResults(uint32_t{2}, PortalResults{});
         return;
       }
       session->starting = true;
       const uint32_t id = session->addResponse(std::move(result), OperationKind::Start, std::string(handle));
-      umbriel_input_capture_session_v1_start(
-          session->capture, id, session->appId.empty() ? "unidentified application" : session->appId.c_str(),
-          capabilities
+      const bool unidentifiedInstance = requestedPersistMode.value_or(0) == 1 && session->instance.empty();
+      const uint32_t persistMode = unidentifiedInstance ? 0 : requestedPersistMode.value_or(0);
+      session->operations.at(id)->requestedPersistMode = persistMode;
+      std::string restoreToken;
+      if (const auto restore = option<RestoreData>(options, "restore_data"); restore
+          && restore->get<0>() == kRestoreVendor
+          && restore->get<1>() == kRestoreVersion
+          && restore->get<2>().containsValueOfType<std::string>()) {
+        restoreToken = restore->get<2>().get<std::string>();
+        if (restoreToken.size() > kRestoreTokenLimit) {
+          restoreToken.clear();
+        }
+      }
+      if (unidentifiedInstance) {
+        restoreToken.clear();
+      }
+      umbriel_input_capture_session_v1_set_persistence(
+          session->capture, persistMode, restoreToken.c_str(), session->instance.c_str()
       );
+      umbriel_input_capture_session_v1_start(session->capture, id, session->appId.c_str(), capabilities);
       wayland.flush();
     }
 
-    static void onGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t) {
+    static void onGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
       auto& portal = *static_cast<Impl*>(data);
       if (std::string_view(interface) == umbriel_input_capture_manager_v1_interface.name && portal.manager == nullptr) {
+        if (version < 2) {
+          std::println(stderr, "input-capture: compositor bridge version 2 is required");
+          return;
+        }
         portal.manager = static_cast<umbriel_input_capture_manager_v1*>(
-            wl_registry_bind(registry, name, &umbriel_input_capture_manager_v1_interface, 1)
+            wl_registry_bind(registry, name, &umbriel_input_capture_manager_v1_interface, 2)
         );
         portal.managerName = name;
       }
@@ -485,6 +624,7 @@ namespace xdpu {
       auto& portal = *static_cast<Impl*>(data);
       if (name == portal.managerName) {
         portal.closeAll();
+        portal.expireScopes();
         umbriel_input_capture_manager_v1_destroy(portal.manager);
         portal.manager = nullptr;
         portal.managerName = 0;

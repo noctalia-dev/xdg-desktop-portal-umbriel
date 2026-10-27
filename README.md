@@ -12,21 +12,23 @@ An [xdg-desktop-portal](https://github.com/flatpak/xdg-desktop-portal) backend f
 
 InputCapture version 2 supports keyboard and pointer capture for input-sharing applications. The application creates a session with `CreateSession2()`, requests permission with `Start()`, connects to EIS, obtains logical output zones, sets screen-edge barriers, and enables the session. Crossing an accepted barrier starts capture. Umbriel sends captured input directly to the application through EI while suppressing local delivery of the captured capabilities.
 
-| Feature                                         | Support                                                             |
-| ----------------------------------------------- | ------------------------------------------------------------------- |
-| Keyboard                                        | Supported, capability `1`, including keymaps and modifiers          |
-| Pointer                                         | Supported, capability `2`, including motion, buttons, and scrolling |
-| Keyboard and pointer together                   | Supported, capability mask `3`                                      |
-| Logical output zones and exterior edge barriers | Supported, including negative coordinates and mixed output scales   |
-| Permission approval                             | Required in Umbriel for every new session                           |
-| Permission persistence and restore tokens       | Unsupported; restore requests still require fresh approval          |
-| Clipboard sharing                               | Unsupported                                                         |
-| Touchscreen, tablet, and gesture capture        | Unsupported                                                         |
-| RemoteDesktop input injection                   | Unsupported by this portal                                          |
+| Feature                                         | Support                                                                     |
+| ----------------------------------------------- | --------------------------------------------------------------------------- |
+| Keyboard                                        | Supported, capability `1`, including keymaps and modifiers                  |
+| Pointer                                         | Supported, capability `2`, including motion, buttons, and scrolling         |
+| Keyboard and pointer together                   | Supported, capability mask `3`                                              |
+| Logical output zones and exterior edge barriers | Supported, including negative coordinates and mixed output scales           |
+| Permission approval                             | Required unless a valid remembered grant is restored                        |
+| Permission persistence and restore tokens       | Supported, with explicit consent for application-lifetime or durable grants |
+| Clipboard sharing                               | Unsupported                                                                 |
+| Touchscreen, tablet, and gesture capture        | Unsupported                                                                 |
+| RemoteDesktop input injection                   | Unsupported by this portal                                                  |
 
-Permission is enforced by Umbriel. Press Enter on a physical keyboard to approve its capture confirmation; another non-modifier key or a pointer click denies it. The displayed application label is a claim rather than a verified identity. Approval lasts only for that capture session, including later disable/enable cycles. Press **Ctrl+Alt+Escape** on a physical keyboard to stop active capture and restore local control. Session close, application or portal failure, locking, and session deactivation also stop capture.
+Permission is enforced by Umbriel. Press Enter on a physical keyboard to allow one capture session. When the application requests persistence, physical **R** remembers approval for the lifetime shown: while the application runs, or until revoked. Another non-modifier key or a pointer click denies it. The displayed application label is a claim rather than a verified identity. Restore tokens work for any compatible application, including empty application identifiers; names alone never restore access. Press **Ctrl+Alt+Escape** on a physical keyboard to stop active capture and restore local control. Session close, application or portal failure, locking, and session deactivation also stop capture.
 
-A matching Umbriel build providing `umbriel_input_capture_manager_v1` is required. This private bridge version is independent of the public InputCapture API version. The backend accepts control calls only from the desktop portal frontend's current D-Bus owner; applications should use `org.freedesktop.portal.InputCapture` through `xdg-desktop-portal`.
+A matching Umbriel build providing version 2 of `umbriel_input_capture_manager_v1` is required. This private bridge version is independent of the public InputCapture API version. The backend accepts control calls only from the desktop portal frontend's current D-Bus owner; applications should use `org.freedesktop.portal.InputCapture` through `xdg-desktop-portal`.
+
+The application must request persistence and retain its portal restore token. Expired, revoked, malformed, or expanded grants require fresh physical approval. Clipboard sharing remains unsupported. Manage remembered grants with `umbriel input-capture-permissions` and `umbriel input-capture-revoke <id>` or `umbriel input-capture-revoke all`. Durable credentials remain in the compositor's private state store; permission listings do not expose them.
 
 ## Building
 
@@ -125,7 +127,7 @@ Selecting another target replaces only the Wayland capture source. The PipeWire 
 
 ## InputCapture verification
 
-The receiver helper is built when Meson's `tests` option is enabled. The complete integration check lives in the Umbriel repository and uses a private D-Bus session, an isolated headless compositor, and backend-boundary input devices. It requires `dbus-daemon` and `dbus-send` from the `dbus` package, plus an `xdg-desktop-portal` frontend executable; the frontend path is supplied explicitly. The frontend used for verification was version 1.22.1.
+The receiver helper is built when Meson's `tests` option is enabled. The complete integration check lives in the Umbriel repository and uses a private D-Bus session, an isolated headless compositor, and backend-boundary input devices. It requires `dbus-daemon` and `dbus-send` from the `dbus` package, plus an `xdg-desktop-portal` frontend executable; the frontend path is supplied explicitly. The frontend used for verification was version 1.22.1. Persistence checks also start `xdg-permission-store` from that existing frontend package, with a private data directory.
 
 After building both repositories with their harness clients, run from this repository:
 
