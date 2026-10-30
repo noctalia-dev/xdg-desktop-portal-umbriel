@@ -151,7 +151,7 @@ configure() {
   for index in 0 1 2 3; do
     x=$(((1 + 2 * (index % 2)) * WIDTH / 4 - 40))
     y=$(((1 + 2 * (index / 2)) * HEIGHT / 4 - 40))
-    "$UMBRIEL" msg "window-move-to:top_left/$x/$y/${WINDOW_IDS[index]}" >/dev/null
+    "$UMBRIEL" msg window-move-to top_left "$x" "$y" --window "${WINDOW_IDS[index]}" >/dev/null
   done
   "$UMBRIEL" settle >/dev/null
 }
@@ -245,13 +245,13 @@ done
 configure 180
 next_palette
 arm window 80 80 "$LEFT" "$LEFT" "$LEFT" "$LEFT"
-"$UMBRIEL" msg "screencast-set-window:${WINDOW_IDS[0]}" >/dev/null
+"$UMBRIEL" msg screencast-set-window "${WINDOW_IDS[0]}" >/dev/null
 repaint
 matched window
 configure 90
 next_palette
 arm return-output "$WIDTH" "$HEIGHT" "$LEFT" "$RIGHT" 0000ff ffffff
-"$UMBRIEL" msg screencast-set-output:HEADLESS-1 >/dev/null
+"$UMBRIEL" msg screencast-set-output HEADLESS-1 >/dev/null
 repaint
 matched return-output
 
