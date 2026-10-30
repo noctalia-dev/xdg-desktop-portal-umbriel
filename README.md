@@ -115,9 +115,9 @@ The first set or follow action while a changeable share is active opens a confir
 Configure any of these Umbriel actions as keybinds or event actions:
 
 - `screencast-set-window` selects the focused window and switches to manual mode.
-- `screencast-set-window:<window-id>` selects a window by its IPC identifier and switches to manual mode.
+- `screencast-set-window <window-id>` selects a window by its IPC identifier and switches to manual mode.
 - `screencast-set-output` selects the focused output and switches to manual mode.
-- `screencast-set-output:<output>` selects a named output and switches to manual mode.
+- `screencast-set-output <output>` selects a named output and switches to manual mode.
 - `screencast-follow-window` follows the focused window.
 - `screencast-follow-output` follows the focused output.
 - `screencast-follow-stop` stops following while keeping the current target.
