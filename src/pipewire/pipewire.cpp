@@ -164,6 +164,50 @@ namespace xdpu {
       return true;
     }
 
+    // Disconnecting a core frees every pw_stream created on it, so each stream
+    // keeps its own core alive until the stream is destroyed.
+    struct CoreConnection {
+      explicit CoreConnection(pw_core* core);
+      ~CoreConnection() {
+        spa_hook_remove(&listener);
+        pw_core_disconnect(core);
+      }
+
+      CoreConnection(const CoreConnection&) = delete;
+      CoreConnection& operator=(const CoreConnection&) = delete;
+
+      pw_core* core = nullptr;
+      spa_hook listener = {};
+      bool lost = false;
+    };
+
+    void onCoreError(void* data, uint32_t id, int seq, int res, const char* message) {
+      (void)seq;
+      if (id != PW_ID_CORE || res != -EPIPE) {
+        return;
+      }
+      // The core is still emitting this event; reconnect from the next createStream().
+      static_cast<CoreConnection*>(data)->lost = true;
+      fprintf(stderr, "pipewire: connection lost: %s\n", message == nullptr ? spa_strerror(res) : message);
+    }
+
+    constexpr pw_core_events kCoreEvents = {
+        .version = PW_VERSION_CORE_EVENTS,
+        .info = nullptr,
+        .done = nullptr,
+        .ping = nullptr,
+        .error = onCoreError,
+        .remove_id = nullptr,
+        .bound_id = nullptr,
+        .add_mem = nullptr,
+        .remove_mem = nullptr,
+        .bound_props = nullptr,
+    };
+
+    CoreConnection::CoreConnection(pw_core* core) : core(core) {
+      pw_core_add_listener(core, &listener, &kCoreEvents, this);
+    }
+
   } // namespace
 
   struct PipeWireStream::Impl {
@@ -216,6 +260,7 @@ namespace xdpu {
     CaptureConstraints constraints;
     uint32_t maxFps = 0;
     bool cursorMetadata = false;
+    std::shared_ptr<CoreConnection> core;
     pw_stream* stream = nullptr;
     spa_hook streamListener = {};
     FormatChoice negotiated;
@@ -559,17 +604,14 @@ namespace xdpu {
     Loop& loop;
     pw_loop* pwLoop = nullptr;
     pw_context* context = nullptr;
-    pw_core* core = nullptr;
+    std::shared_ptr<CoreConnection> core;
     int fdId = 0;
 
     ~Impl() {
       if (fdId != 0) {
         loop.removeFd(fdId);
       }
-      if (core != nullptr) {
-        pw_core_disconnect(core);
-        core = nullptr;
-      }
+      core.reset();
       if (context != nullptr) {
         pw_context_destroy(context);
         context = nullptr;
@@ -580,6 +622,19 @@ namespace xdpu {
         pwLoop = nullptr;
       }
       pw_deinit();
+    }
+
+    bool connect() {
+      if (context == nullptr) {
+        return false;
+      }
+      pw_core* connected = pw_context_connect(context, nullptr, 0);
+      if (connected == nullptr) {
+        fprintf(stderr, "pipewire: unable to connect to core: %s\n", std::strerror(errno));
+        return false;
+      }
+      core = std::make_shared<CoreConnection>(connected);
+      return true;
     }
   };
 
@@ -776,18 +831,14 @@ namespace xdpu {
       return;
     }
 
-    m_impl->core = pw_context_connect(m_impl->context, nullptr, 0);
-    if (m_impl->core == nullptr) {
-      fprintf(stderr, "pipewire: unable to connect to core\n");
-      return;
-    }
-
     const int fd = pw_loop_get_fd(m_impl->pwLoop);
     m_impl->fdId = loop.addFd(fd, EPOLLIN | EPOLLERR | EPOLLHUP, [impl = m_impl.get()](uint32_t events) {
       if ((events & (EPOLLIN | EPOLLERR | EPOLLHUP)) != 0) {
         pw_loop_iterate(impl->pwLoop, 0);
       }
     });
+
+    m_impl->connect();
   }
 
   PipeWireContext::~PipeWireContext() = default;
@@ -808,19 +859,23 @@ namespace xdpu {
   std::unique_ptr<PipeWireStream> PipeWireContext::createStream(
       uint32_t width, uint32_t height, const CaptureConstraints& constraints, uint32_t maxFps, bool cursorMetadata
   ) {
-    if (m_impl->core == nullptr || width == 0 || height == 0 || constraints.transform > 7) {
+    if (width == 0 || height == 0 || constraints.transform > 7) {
+      return nullptr;
+    }
+    if ((m_impl->core == nullptr || m_impl->core->lost) && !m_impl->connect()) {
       return nullptr;
     }
 
     auto streamImpl = std::make_unique<PipeWireStream::Impl>(width, height, constraints, maxFps, cursorMetadata);
     auto stream = std::unique_ptr<PipeWireStream>(new PipeWireStream(std::move(streamImpl)));
+    stream->m_impl->core = m_impl->core;
 
     pw_properties* props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Screen", PW_KEY_MEDIA_CLASS,
         "Video/Source", PW_KEY_MEDIA_NAME, "umbriel-screen-capture", PW_KEY_NODE_NAME, "umbriel-screen-capture",
         PW_KEY_NODE_DESCRIPTION, "Umbriel Screen Capture", nullptr
     );
-    stream->m_impl->stream = pw_stream_new(m_impl->core, "umbriel-screen-capture", props);
+    stream->m_impl->stream = pw_stream_new(m_impl->core->core, "umbriel-screen-capture", props);
     if (stream->m_impl->stream == nullptr) {
       fprintf(stderr, "pipewire: unable to create stream\n");
       return nullptr;
