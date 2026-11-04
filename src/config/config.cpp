@@ -88,6 +88,9 @@ namespace xdpu {
 
       readString(table, "screencast", "chooser_cmd", config.screencast.chooserCmd);
       readInt(table, "screencast", "max_fps", config.screencast.maxFps);
+      if (const auto value = table["screencast"]["independent_sources"].value<bool>()) {
+        config.screencast.independentSources = *value;
+      }
 
       readString(table, "screenshot", "cmd", config.screenshot.cmd);
       readString(table, "screenshot", "color_pick_cmd", config.screenshot.colorPickCmd);

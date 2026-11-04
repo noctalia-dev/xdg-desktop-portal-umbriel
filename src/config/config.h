@@ -13,6 +13,7 @@ namespace xdpu {
     struct Screencast {
       std::string chooserCmd = XDPU_DEFAULT_CHOOSER_CMD;
       int maxFps = 0;
+      bool independentSources = false;
 
       bool operator==(const Screencast&) const = default;
     } screencast;

@@ -106,6 +106,14 @@ executable(
 # --- tests -------------------------------------------------------------------
 
 if get_option('tests')
+  config_test = executable(
+    'config-test',
+    files('tests/config.cpp', 'src/config/config.cpp', 'src/loop/loop.cpp') + [defaults_h],
+    include_directories: [include_directories('src'), include_directories('.')],
+    dependencies: [tomlplusplus_dep],
+  )
+  test('config', config_test)
+
   capture_transform_test = executable(
     'capture-transform-test',
     'tests/capture_transform.cpp',

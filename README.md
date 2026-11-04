@@ -96,11 +96,14 @@ The config file lives at `$XDG_CONFIG_HOME/xdg-desktop-portal-umbriel/config.tom
 [screencast]
 chooser_cmd = "/usr/local/libexec/umbriel-share-picker"
 max_fps = 0
+independent_sources = false
 
 [screenshot]
 cmd = ""
 color_pick_cmd = ""
 ```
+
+Set `screencast.independent_sources = true` to keep each session bound to its own selected source, for example when OBS scenes capture different monitors. New sessions prompt independently instead of joining another session’s dynamic target. Valid restore data can still restore a session’s previous selection. Captures created with this option use fixed targets and do not respond to Umbriel’s dynamic target-changing actions. The default is `false`, which retains dynamic sharing.
 
 ## Screencast cursor modes
 

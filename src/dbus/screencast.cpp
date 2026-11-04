@@ -487,7 +487,7 @@ namespace xdpu {
           startCaptures(restored);
           return;
         }
-        if (const auto mode = joinDynamicMode()) {
+        if (const auto mode = portal.config.screencast.independentSources ? std::nullopt : joinDynamicMode()) {
           startDynamic(std::nullopt, *mode);
           return;
         }
@@ -638,7 +638,7 @@ namespace xdpu {
         if (!session->multiple() && selections.size() > 1) {
           selections.resize(1);
         }
-        if (selections.size() == 1) {
+        if (selections.size() == 1 && !portal.config.screencast.independentSources) {
           startDynamic(std::move(selections.front()), Session::DynamicMode::Manual);
           return;
         }
