@@ -166,7 +166,13 @@ namespace xdpu {
       return std::nullopt;
     }
 
-    std::vector<Session::Selection> parseRestoreData(const PortalResults& options) {
+    struct SelectionRequest {
+      std::vector<Session::Selection> selections;
+      // The user opted this share into Umbriel's target-changing actions.
+      bool dynamic = false;
+    };
+
+    SelectionRequest parseRestoreData(const PortalResults& options) {
       const auto it = options.find("restore_data");
       if (it == options.end() || !it->second.containsValueOfType<RestoreTuple>()) {
         return {};
@@ -194,16 +200,18 @@ namespace xdpu {
         return {};
       }
 
-      std::vector<Session::Selection> selections;
-      selections.reserve(entries.size());
+      SelectionRequest request;
+      request.selections.reserve(entries.size());
       for (const PortalResults& entry : entries) {
         const auto selection = parseEntry(entry, *version);
         if (!selection) {
           return {};
         }
-        selections.push_back(*selection);
+        request.selections.push_back(*selection);
       }
-      return selections;
+      // Only a lone source can follow target actions; older records never carry the key and restore fixed.
+      request.dynamic = request.selections.size() == 1 && optionValue<bool>(entries.front(), "dynamic").value_or(false);
+      return request;
     }
 
     std::optional<Session::Selection>
@@ -253,14 +261,14 @@ namespace xdpu {
       return matches;
     }
 
-    std::vector<Session::Selection>
-    parseChooserSelections(const WaylandContext& wayland, std::string_view output, bool multiple) {
+    SelectionRequest parseChooserSelections(const WaylandContext& wayland, std::string_view output, bool multiple) {
       const std::string line = firstLine(output);
       if (line.empty()) {
         return {};
       }
 
-      std::vector<Session::Selection> selections;
+      SelectionRequest request;
+      auto& selections = request.selections;
       try {
         const auto json = nlohmann::json::parse(line);
         const auto values = json.value("selections", nlohmann::json::array());
@@ -286,11 +294,15 @@ namespace xdpu {
             break;
           }
         }
+        // A chooser that does not ask for a changeable share gets a fixed one.
+        const auto dynamic = json.find("dynamic");
+        request.dynamic =
+            selections.size() == 1 && dynamic != json.end() && dynamic->is_boolean() && dynamic->get<bool>();
       } catch (const std::exception& error) {
         std::fprintf(stderr, "screencast: chooser returned invalid JSON: %s\n", error.what());
       }
 
-      return selections;
+      return request;
     }
 
     std::string makeUuid() {
@@ -455,7 +467,10 @@ namespace xdpu {
         return;
       }
       const uint32_t persistMode = optionValue<uint32_t>(options, "persist_mode").value_or(0);
-      sessionIt->second->setSelectionOptions(types, multiple, cursorMode, persistMode, parseRestoreData(options));
+      auto restore = parseRestoreData(options);
+      sessionIt->second->setSelectionOptions(
+          types, multiple, cursorMode, persistMode, std::move(restore.selections), restore.dynamic
+      );
 
       result.returnResults(uint32_t{0}, PortalResults{});
       loop.addTimer(0, [request = std::move(request)]() mutable { request.reset(); });
@@ -484,7 +499,7 @@ namespace xdpu {
             portal.wayland, session->restoreSelections(), session->multiple(), session->sourceTypes()
         );
         if (!restored.empty()) {
-          startCaptures(restored);
+          startCaptures({restored, session->restoreDynamic()});
           return;
         }
         if (const auto mode = joinDynamicMode()) {
@@ -494,21 +509,9 @@ namespace xdpu {
         runChooser();
       }
 
-      std::optional<Session::DynamicMode> activeDynamicMode() const {
-        if (session->appId().empty()) {
-          return std::nullopt;
-        }
-        const auto existing = std::ranges::find_if(portal.sessions, [this](const auto& entry) {
-          const auto& existing = entry.second;
-          return existing != session && existing->appId() == session->appId() && existing->hasDynamicStreams();
-        });
-        return existing == portal.sessions.end() ? std::nullopt : existing->second->dynamicMode();
-      }
-
+      // Only the short handoff after a changeable share joins it without a chooser. A concurrent share from the
+      // same application, such as a second OBS source, is an independent request and always prompts.
       std::optional<Session::DynamicMode> joinDynamicMode() const {
-        if (const auto mode = activeDynamicMode()) {
-          return mode;
-        }
         if (session->appId().empty()) {
           return std::nullopt;
         }
@@ -608,15 +611,15 @@ namespace xdpu {
                 return;
               }
 
-              auto selections = parseChooserSelections(self->portal.wayland, child.output, self->session->multiple());
-              if (selections.empty()) {
+              auto request = parseChooserSelections(self->portal.wayland, child.output, self->session->multiple());
+              if (request.selections.empty()) {
                 std::fprintf(
                     stderr, "screencast: chooser returned no valid selections: %s\n", firstLine(child.output).c_str()
                 );
                 self->finish(1, {});
                 return;
               }
-              self->startCaptures(std::move(selections));
+              self->startCaptures(std::move(request));
             }
         );
       }
@@ -627,10 +630,13 @@ namespace xdpu {
           finish(2, {});
           return;
         }
-        startCaptures({selectionForOutput(outputs.front())});
+        startCaptures({{selectionForOutput(outputs.front())}});
       }
 
-      void startCaptures(std::vector<Session::Selection> selections) {
+      // Fixed unless the user opted this lone source into target-changing actions; only those shares follow and
+      // update Umbriel's shared dynamic target.
+      void startCaptures(SelectionRequest request) {
+        auto& selections = request.selections;
         if (selections.empty()) {
           finish(1, {});
           return;
@@ -638,7 +644,7 @@ namespace xdpu {
         if (!session->multiple() && selections.size() > 1) {
           selections.resize(1);
         }
-        if (selections.size() == 1) {
+        if (request.dynamic && selections.size() == 1) {
           startDynamic(std::move(selections.front()), Session::DynamicMode::Manual);
           return;
         }

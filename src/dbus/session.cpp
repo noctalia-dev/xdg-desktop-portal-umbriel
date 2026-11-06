@@ -395,6 +395,7 @@ namespace xdpu {
     uint32_t selectedCursorMode = 1;
     uint32_t selectedPersistMode = 0;
     std::vector<Selection> restore;
+    bool restoreIsDynamic = false;
     std::vector<Selection> currentSelections;
     std::vector<std::shared_ptr<StreamState>> streams;
 
@@ -454,13 +455,14 @@ namespace xdpu {
 
   void Session::setSelectionOptions(
       uint32_t sourceTypes, bool multiple, uint32_t cursorMode, uint32_t persistMode,
-      std::vector<Selection> restoreSelections
+      std::vector<Selection> restoreSelections, bool restoreDynamic
   ) {
     m_impl->selectedSourceTypes = (sourceTypes & 0x3u) == 0 ? 1u : (sourceTypes & 0x3u);
     m_impl->allowMultiple = multiple;
     m_impl->selectedCursorMode = cursorMode;
     m_impl->selectedPersistMode = std::min<uint32_t>(persistMode, 2);
     m_impl->restore = std::move(restoreSelections);
+    m_impl->restoreIsDynamic = restoreDynamic;
   }
 
   uint32_t Session::sourceTypes() const { return m_impl->selectedSourceTypes; }
@@ -472,6 +474,8 @@ namespace xdpu {
   uint32_t Session::persistMode() const { return m_impl->selectedPersistMode; }
 
   const std::vector<Session::Selection>& Session::restoreSelections() const { return m_impl->restore; }
+
+  bool Session::restoreDynamic() const { return m_impl->restoreIsDynamic; }
 
   void Session::setSelections(std::vector<Selection> selections) { m_impl->currentSelections = std::move(selections); }
 
@@ -574,6 +578,7 @@ namespace xdpu {
   sdbus::Variant Session::restoreDataVariant(const std::string& token) const {
     std::vector<PortalResults> entries;
     entries.reserve(m_impl->currentSelections.size());
+    const bool dynamic = hasDynamicStreams();
     for (const Selection& selection : m_impl->currentSelections) {
       PortalResults entry;
       entry.emplace("kind", sdbus::Variant{kindName(selection.kind)});
@@ -584,6 +589,9 @@ namespace xdpu {
       } else {
         entry.emplace("identifier", sdbus::Variant{selection.identifier});
         entry.emplace("app_id", sdbus::Variant{selection.appId});
+      }
+      if (dynamic) {
+        entry.emplace("dynamic", sdbus::Variant{true});
       }
       entries.push_back(std::move(entry));
     }

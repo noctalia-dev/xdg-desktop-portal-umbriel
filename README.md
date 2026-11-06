@@ -108,7 +108,9 @@ Applications can request hidden, embedded, or metadata cursors for a screencast.
 
 ## Changeable screencast targets
 
-Every share with exactly one selected screen or window can be changed later with Umbriel actions. The selected source starts sharing immediately. Shares containing several selected sources remain fixed because one target action cannot unambiguously identify which stream to replace.
+A share with exactly one selected screen or window can be made changeable by enabling **Allow changing the source with Umbriel actions** in the share picker. Other shares are fixed to the source the user picked, so several shares from one application, such as separate OBS sources, each keep their own screen or window and are not moved by Umbriel actions. The selected source starts sharing immediately. Shares containing several selected sources are always fixed because one target action cannot unambiguously identify which stream to replace.
+
+All changeable shares follow one Umbriel target. A custom `chooser_cmd` opts in by adding `"dynamic": true` next to `"selections"` in its output; without it the share is fixed.
 
 The first set or follow action while a changeable share is active opens a confirmation panel in Umbriel. Dismissing the panel cancels that action and asks again the next time. After confirmation, later target changes are immediate until the share ends. This protection can be disabled with Umbriel's `screencast.disable_dynamic_confirmation` setting. Following lasts only for the active portal session. Window following can expose any application you focus, so use it only when every window you may visit is safe to share.
 
@@ -123,7 +125,7 @@ Configure any of these Umbriel actions as keybinds or event actions:
 - `screencast-follow-stop` stops following while keeping the current target.
 - `screencast-clear` stops following and pauses the stream.
 
-Selecting another target replaces only the Wayland capture source. The PipeWire node remains the same, so applications keep the original share without opening another chooser. Window and output targets are interchangeable on that stream. Applications can restore the selected source without reopening the chooser, and a restored single-source stream remains changeable. Immediate follow-up sessions from the same application reuse the mode and target from the completed request, including when that short-lived request closes during handoff. The grant expires after two seconds and is invalidated when the target changes or clears. Another application or an unrelated later share still requires a fresh picker choice.
+Selecting another target replaces only the Wayland capture source. The PipeWire node remains the same, so applications keep the original share without opening another chooser. Window and output targets are interchangeable on that stream. Applications can restore the selected source without reopening the chooser; restore data records whether the share was changeable, and restore data written before this choice existed restores a fixed share. A new session from the same application started within two seconds of a changeable share being granted or retargeted reuses its mode and target, including when that short-lived request closes during handoff. The grant is invalidated when the target changes or clears. Any other request, including a second concurrent share from the same application, opens the picker.
 
 ## InputCapture verification
 

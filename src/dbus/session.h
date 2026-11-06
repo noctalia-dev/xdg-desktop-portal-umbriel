@@ -85,13 +85,14 @@ namespace xdpu {
 
     void setSelectionOptions(
         uint32_t sourceTypes, bool multiple, uint32_t cursorMode, uint32_t persistMode,
-        std::vector<Selection> restoreSelections
+        std::vector<Selection> restoreSelections, bool restoreDynamic
     );
     uint32_t sourceTypes() const;
     bool multiple() const;
     uint32_t cursorMode() const;
     uint32_t persistMode() const;
     const std::vector<Selection>& restoreSelections() const;
+    [[nodiscard]] bool restoreDynamic() const;
 
     void setSelections(std::vector<Selection> selections);
     const std::vector<Selection>& selections() const;

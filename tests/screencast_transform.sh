@@ -160,7 +160,7 @@ configure normal
 cat >"$RUNTIME/choose" <<'CHOOSER'
 #!/usr/bin/env bash
 cat >/dev/null
-printf '%s\n' '{"selections":[{"kind":"monitor","output":"HEADLESS-1"}]}'
+printf '%s\n' '{"selections":[{"kind":"monitor","output":"HEADLESS-1"}],"dynamic":true}'
 CHOOSER
 chmod +x "$RUNTIME/choose"
 cat >"$XDG_CONFIG_HOME/xdg-desktop-portal-umbriel/config.toml" <<CONFIG

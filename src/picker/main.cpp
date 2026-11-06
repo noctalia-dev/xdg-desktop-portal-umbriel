@@ -75,6 +75,7 @@ namespace {
     GtkWidget* outputList = nullptr;
     GtkWidget* windowList = nullptr;
     GtkWidget* shareButton = nullptr;
+    GtkWidget* dynamicCheck = nullptr;
     std::vector<PreviewCard> previewCards;
     std::unique_ptr<xdpu::Previews> previews;
     GtkCssProvider* paletteProvider = nullptr;
@@ -761,7 +762,11 @@ namespace {
     if (state.multiple || selections.empty()) {
       appendSelectedRows(state, state.windowList, selections);
     }
-    quitAfterResponse(state, json{{"selections", std::move(selections)}});
+    json response{{"selections", std::move(selections)}};
+    if (state.dynamicCheck != nullptr) {
+      response["dynamic"] = gtk_check_button_get_active(GTK_CHECK_BUTTON(state.dynamicCheck)) == TRUE;
+    }
+    quitAfterResponse(state, response);
   }
 
   void onShareClicked(GtkButton*, gpointer userData) { share(*static_cast<AppState*>(userData)); }
@@ -862,6 +867,12 @@ namespace {
 
     GtkWidget* footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
     gtk_widget_add_css_class(footer, "picker-footer");
+    // Several sources stay fixed: one target action cannot say which stream to replace.
+    if (!state.multiple) {
+      state.dynamicCheck = gtk_check_button_new_with_label("Allow changing the source with Umbriel actions");
+      gtk_widget_set_valign(state.dynamicCheck, GTK_ALIGN_CENTER);
+      gtk_box_append(GTK_BOX(footer), state.dynamicCheck);
+    }
     GtkWidget* spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(spacer, TRUE);
     gtk_box_append(GTK_BOX(footer), spacer);
