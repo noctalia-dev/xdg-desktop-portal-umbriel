@@ -64,6 +64,8 @@ just install        # release build + sudo meson install
 just uninstall      # remove files installed by just install
 ```
 
+Tests, lint, and formatting commands are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### Manual
 
 ```sh

@@ -138,7 +138,7 @@ namespace xdpu {
         object = sdbus::createObject(portal.connection, sdbus::ObjectPath{path});
         object
             ->addVTable(
-                sdbus::registerMethod("Close").implementedAs([this]() {
+                sdbus::registerMethod("Close").implementedAs([this] {
                   portal.requireFrontend();
                   if (portal.caller() != sender) {
                     throw failure("Input capture session belongs to another caller");
@@ -146,7 +146,7 @@ namespace xdpu {
                   close(false);
                 }),
                 sdbus::registerSignal("Closed").withParameters(),
-                sdbus::registerProperty("version").withGetter([]() { return uint32_t{1}; })
+                sdbus::registerProperty("version").withGetter([] { return uint32_t{1}; })
             )
             .forInterface(kSessionInterface);
         capture = umbriel_input_capture_manager_v1_create_session(portal.manager);
@@ -163,7 +163,7 @@ namespace xdpu {
         if (!handle.empty()) {
           operation->request = sdbus::createObject(portal.connection, sdbus::ObjectPath{handle});
           operation->request
-              ->addVTable(sdbus::registerMethod("Close").implementedAs([weak, id]() {
+              ->addVTable(sdbus::registerMethod("Close").implementedAs([weak, id] {
                 if (const auto session = weak.lock()) {
                   session->portal.requireFrontend();
                   const auto found = session->operations.find(id);
@@ -179,7 +179,7 @@ namespace xdpu {
               }))
               .forInterface("org.freedesktop.impl.portal.Request");
         }
-        operation->timer = portal.loop.addTimer(operation->kind == OperationKind::Start ? 120000 : 10000, [weak, id]() {
+        operation->timer = portal.loop.addTimer(operation->kind == OperationKind::Start ? 120000 : 10000, [weak, id] {
           if (const auto session = weak.lock()) {
             const auto found = session->operations.find(id);
             if (found != session->operations.end()) {
@@ -200,7 +200,7 @@ namespace xdpu {
         return add(std::move(operation), handle);
       }
 
-      void finish(uint32_t id, uint32_t status, PortalResults results = {}) {
+      void finish(uint32_t id, uint32_t status, const PortalResults& results = {}) {
         const auto found = operations.find(id);
         if (found == operations.end()) {
           return;
@@ -223,7 +223,7 @@ namespace xdpu {
         // The request Close callback may currently be executing. Keep its
         // D-Bus object alive until dispatch returns.
         if (operation->request) {
-          portal.defer([request = std::move(operation->request)]() {});
+          portal.defer([request = std::move(operation->request)] {});
         }
       }
 
@@ -243,10 +243,10 @@ namespace xdpu {
           object->emitSignal("Closed").onInterface(kSessionInterface).withArguments();
         }
         const std::string sessionPath = path;
-        portal.defer([owner = &portal, sessionPath]() { owner->sessions.erase(sessionPath); });
+        portal.defer([owner = &portal, sessionPath] { owner->sessions.erase(sessionPath); });
       }
 
-      void signal(const char* name, PortalResults options) {
+      void signal(const char* name, const PortalResults& options) {
         if (!closed) {
           portal.object.emitSignal(name).onInterface(kInterface).withArguments(sdbus::ObjectPath{path}, options);
         }
@@ -275,7 +275,7 @@ namespace xdpu {
             );
           }
         }
-        session.finish(id, status, std::move(results));
+        session.finish(id, status, results);
         if (status != 0) {
           session.close(true);
         }
@@ -304,7 +304,7 @@ namespace xdpu {
           results.emplace("zones", sdbus::Variant{found->second->zones});
           results.emplace("zone_set", sdbus::Variant{zoneSet});
         }
-        session.finish(id, status, std::move(results));
+        session.finish(id, status, results);
       }
 
       static void onBarrierFailed(void* data, umbriel_input_capture_session_v1*, uint32_t id, uint32_t barrier) {
@@ -323,7 +323,7 @@ namespace xdpu {
         }
         PortalResults results;
         results.emplace("failed_barriers", sdbus::Variant{found->second->failedBarriers});
-        session.finish(id, status, std::move(results));
+        session.finish(id, status, results);
       }
 
       static void onEisFd(void* data, umbriel_input_capture_session_v1*, uint32_t id, int32_t fd) {
@@ -466,7 +466,7 @@ namespace xdpu {
 
     void defer(std::function<void()> callback) {
       const auto id = std::make_shared<int>(0);
-      *id = loop.addTimer(0, [this, id, callback = std::move(callback)]() {
+      *id = loop.addTimer(0, [this, id, callback = std::move(callback)] {
         std::erase(deferred, *id);
         callback();
       });
@@ -797,8 +797,8 @@ namespace xdpu {
               sdbus::registerSignal("Deactivated").withParameters<sdbus::ObjectPath, PortalResults>(),
               sdbus::registerSignal("Disabled").withParameters<sdbus::ObjectPath, PortalResults>(),
               sdbus::registerSignal("ZonesChanged").withParameters<sdbus::ObjectPath, PortalResults>(),
-              sdbus::registerProperty("SupportedCapabilities").withGetter([]() { return kCapabilities; }),
-              sdbus::registerProperty("version").withGetter([]() { return uint32_t{2}; })
+              sdbus::registerProperty("SupportedCapabilities").withGetter([] { return kCapabilities; }),
+              sdbus::registerProperty("version").withGetter([] { return uint32_t{2}; })
           )
           .forInterface(kInterface);
     }

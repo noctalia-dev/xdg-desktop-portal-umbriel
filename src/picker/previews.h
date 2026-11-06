@@ -30,7 +30,7 @@ namespace xdpu {
     ~Previews();
     // Replace pending work with the currently visible indices. Already captured or
     // in-flight sources are ignored; hidden sources never open capture sessions.
-    void request(std::vector<size_t> indices);
+    void request(const std::vector<size_t>& indices);
     void stop();
     std::vector<PreviewResult> takeResults();
 

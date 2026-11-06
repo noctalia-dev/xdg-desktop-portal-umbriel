@@ -52,7 +52,8 @@ namespace xdpu {
   public:
     using Callback = std::function<void(ProcessResult)>;
 
-    static std::shared_ptr<AsyncProcess> start(Loop& loop, std::string command, std::string input, Callback callback);
+    [[nodiscard]] static std::shared_ptr<AsyncProcess>
+    start(Loop& loop, std::string command, std::string input, Callback callback);
     ~AsyncProcess();
 
     AsyncProcess(const AsyncProcess&) = delete;

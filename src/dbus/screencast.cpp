@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <print>
 #include <random>
 #include <sdbus-c++/sdbus-c++.h>
 #include <set>
@@ -299,7 +300,7 @@ namespace xdpu {
         request.dynamic =
             selections.size() == 1 && dynamic != json.end() && dynamic->is_boolean() && dynamic->get<bool>();
       } catch (const std::exception& error) {
-        std::fprintf(stderr, "screencast: chooser returned invalid JSON: %s\n", error.what());
+        std::println(stderr, "screencast: chooser returned invalid JSON: {}", error.what());
       }
 
       return request;
@@ -361,10 +362,11 @@ namespace xdpu {
     static constexpr auto kDynamicGrantLifetime = std::chrono::seconds(2);
 
     Impl(
-        Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, const Config& config,
-        WaylandContext& wayland, PipeWireContext& pipewire
+        Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, Config config, WaylandContext& wayland,
+        PipeWireContext& pipewire
     )
-        : loop(loop), connection(connection), object(object), config(config), wayland(wayland), pipewire(pipewire) {
+        : loop(loop), connection(connection), object(object), config(std::move(config)), wayland(wayland),
+          pipewire(pipewire) {
       object
           .addVTable(
               sdbus::registerMethod("CreateSession")
@@ -402,9 +404,9 @@ namespace xdpu {
                   })
                   .withInputParamNames("handle", "session_handle", "app_id", "parent_window", "options")
                   .withOutputParamNames("response", "results"),
-              sdbus::registerProperty("AvailableSourceTypes").withGetter([]() { return kAvailableSourceTypes; }),
-              sdbus::registerProperty("AvailableCursorModes").withGetter([]() { return kAvailableCursorModes; }),
-              sdbus::registerProperty("version").withGetter([]() { return uint32_t{4}; })
+              sdbus::registerProperty("AvailableSourceTypes").withGetter([] { return kAvailableSourceTypes; }),
+              sdbus::registerProperty("AvailableCursorModes").withGetter([] { return kAvailableCursorModes; }),
+              sdbus::registerProperty("version").withGetter([] { return uint32_t{4}; })
           )
           .forInterface(kInterface);
     }
@@ -422,7 +424,7 @@ namespace xdpu {
     }
 
     void deferEraseSession(const std::string& path) {
-      loop.addTimer(0, [this, path]() {
+      loop.addTimer(0, [this, path] {
         sessions.erase(path);
         reportActive();
       });
@@ -431,28 +433,28 @@ namespace xdpu {
     void createSession(
         PortalResponse&& result, const std::string& handle, const std::string& sessionPath, const std::string& appId
     ) {
-      auto request = std::make_shared<Request>(connection, handle, []() {});
+      auto request = std::make_shared<Request>(connection, handle, [] {});
       if (auto existing = sessions.find(sessionPath); existing != sessions.end()) {
         existing->second->close();
         sessions.erase(existing);
         reportActive();
       }
 
-      sessions.emplace(sessionPath, std::make_shared<Session>(connection, sessionPath, appId, [this, sessionPath]() {
+      sessions.emplace(sessionPath, std::make_shared<Session>(connection, sessionPath, appId, [this, sessionPath] {
                          deferEraseSession(sessionPath);
                        }));
       result.returnResults(uint32_t{0}, PortalResults{});
-      loop.addTimer(0, [request = std::move(request)]() mutable { request.reset(); });
+      loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
     }
 
     void selectSources(
         PortalResponse&& result, const std::string& handle, const std::string& sessionPath, const PortalResults& options
     ) {
-      auto request = std::make_shared<Request>(connection, handle, []() {});
+      auto request = std::make_shared<Request>(connection, handle, [] {});
       const auto sessionIt = sessions.find(sessionPath);
       if (sessionIt == sessions.end() || sessionIt->second->closed()) {
         result.returnResults(uint32_t{2}, PortalResults{});
-        loop.addTimer(0, [request = std::move(request)]() mutable { request.reset(); });
+        loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
         return;
       }
 
@@ -460,10 +462,10 @@ namespace xdpu {
       const bool multiple = optionValue<bool>(options, "multiple").value_or(false);
       const uint32_t cursorMode = optionValue<uint32_t>(options, "cursor_mode").value_or(kCursorHidden);
       if (cursorMode != kCursorHidden && cursorMode != kCursorEmbedded && cursorMode != kCursorMetadata) {
-        std::fprintf(stderr, "screencast: unsupported cursor mode %u\n", cursorMode);
+        std::println(stderr, "screencast: unsupported cursor mode {}", cursorMode);
         sessionIt->second->closeByBackend();
         result.returnResults(uint32_t{2}, PortalResults{});
-        loop.addTimer(0, [request = std::move(request)]() mutable { request.reset(); });
+        loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
         return;
       }
       const uint32_t persistMode = optionValue<uint32_t>(options, "persist_mode").value_or(0);
@@ -473,7 +475,7 @@ namespace xdpu {
       );
 
       result.returnResults(uint32_t{0}, PortalResults{});
-      loop.addTimer(0, [request = std::move(request)]() mutable { request.reset(); });
+      loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
     }
 
     struct StartOperation : public std::enable_shared_from_this<StartOperation> {
@@ -529,7 +531,7 @@ namespace xdpu {
 
       void attachRequest(const std::string& handle) {
         std::weak_ptr<StartOperation> weak = shared_from_this();
-        request = std::make_shared<Request>(portal.connection, handle, [weak]() {
+        request = std::make_shared<Request>(portal.connection, handle, [weak] {
           if (auto op = weak.lock()) {
             op->cancel();
           }
@@ -541,10 +543,10 @@ namespace xdpu {
           return;
         }
         auto doomed = std::move(request);
-        portal.loop.addTimer(0, [doomed = std::move(doomed)]() mutable { doomed.reset(); });
+        portal.loop.addTimer(0, [doomed = std::move(doomed)] mutable { doomed.reset(); });
       }
 
-      void finish(uint32_t response, PortalResults results = {}) {
+      void finish(uint32_t response, const PortalResults& results = {}) {
         if (done) {
           return;
         }
@@ -581,7 +583,7 @@ namespace xdpu {
 
       void runChooser() {
         if (portal.config.screencast.chooserCmd.empty()) {
-          std::fprintf(stderr, "screencast: no chooser command configured; cancelling\n");
+          std::println(stderr, "screencast: no chooser command configured; cancelling");
           finish(1, {});
           return;
         }
@@ -590,21 +592,21 @@ namespace xdpu {
         std::string input = portal.wayland.buildChooserJson(session->sourceTypes(), session->multiple());
         input.push_back('\n');
         process = AsyncProcess::start(
-            portal.loop, portal.config.screencast.chooserCmd, std::move(input), [self](ProcessResult child) {
+            portal.loop, portal.config.screencast.chooserCmd, std::move(input), [self](const ProcessResult& child) {
               if (self->done) {
                 return;
               }
               if (child.commandNotFound()) {
-                std::fprintf(
-                    stderr, "screencast: chooser command not found (%s); falling back to first output\n",
-                    self->portal.config.screencast.chooserCmd.c_str()
+                std::println(
+                    stderr, "screencast: chooser command not found ({}); falling back to first output",
+                    self->portal.config.screencast.chooserCmd
                 );
                 self->fallbackFirstOutput();
                 return;
               }
               if (!child.success()) {
-                std::fprintf(
-                    stderr, "screencast: chooser exited unsuccessfully (status=%d, signal=%d)\n", child.exitStatus,
+                std::println(
+                    stderr, "screencast: chooser exited unsuccessfully (status={}, signal={})", child.exitStatus,
                     child.termSignal
                 );
                 self->finish(1, {});
@@ -613,9 +615,7 @@ namespace xdpu {
 
               auto request = parseChooserSelections(self->portal.wayland, child.output, self->session->multiple());
               if (request.selections.empty()) {
-                std::fprintf(
-                    stderr, "screencast: chooser returned no valid selections: %s\n", firstLine(child.output).c_str()
-                );
+                std::println(stderr, "screencast: chooser returned no valid selections: {}", firstLine(child.output));
                 self->finish(1, {});
                 return;
               }
@@ -699,7 +699,7 @@ namespace xdpu {
             // Do not silently burn the cursor into the image when the caller
             // requested a separate metadata stream.  Hidden is the only
             // degradation that keeps the captured pixels cursor-free.
-            std::fprintf(stderr, "screencast: PipeWire 1.4.8 is required for cursor metadata; hiding cursor\n");
+            std::println(stderr, "screencast: PipeWire 1.4.8 is required for cursor metadata; hiding cursor");
           }
         }
 
@@ -723,8 +723,8 @@ namespace xdpu {
           }
 
           if (!pending[index].capture) {
-            std::fprintf(
-                stderr, "screencast: unable to create capture for %s\n",
+            std::println(
+                stderr, "screencast: unable to create capture for {}",
                 selection.kind == Session::SourceKind::Monitor ? selection.output.c_str() : selection.identifier.c_str()
             );
             finish(2, {});
@@ -732,13 +732,13 @@ namespace xdpu {
           }
         }
 
-        timeoutTimer = portal.loop.addTimer(5000, [weakSelf]() {
+        timeoutTimer = portal.loop.addTimer(5000, [weakSelf] {
           auto self = weakSelf.lock();
           if (!self || self->done) {
             return;
           }
           self->timeoutTimer = 0;
-          std::fprintf(stderr, "screencast: timed out waiting for capture constraints\n");
+          std::println(stderr, "screencast: timed out waiting for capture constraints");
           self->finish(2, {});
         });
         maybeCompleteCaptures();
@@ -807,7 +807,7 @@ namespace xdpu {
           const uint32_t width = item.constraints.bufferWidth;
           const uint32_t height = item.constraints.bufferHeight;
           if (width == 0 || height == 0) {
-            std::fprintf(stderr, "screencast: capture reported empty buffer size\n");
+            std::println(stderr, "screencast: capture reported empty buffer size");
             finish(2, {});
             return;
           }
@@ -817,7 +817,7 @@ namespace xdpu {
               item.capture->hasCursorMetadata()
           );
           if (!stream) {
-            std::fprintf(stderr, "screencast: unable to create PipeWire stream\n");
+            std::println(stderr, "screencast: unable to create PipeWire stream");
             finish(2, {});
             return;
           }
@@ -832,7 +832,7 @@ namespace xdpu {
                   portal.loop, portal.wayland, std::move(item.capture), std::move(stream), item.constraints,
                   item.selection, captureCursorMode,
                   static_cast<uint32_t>(std::max(0, portal.config.screencast.maxFps)), item.dynamicMode,
-                  [portalPtr, sessionPath]() {
+                  [portalPtr, sessionPath] {
                     const auto it = portalPtr->sessions.find(sessionPath);
                     if (it != portalPtr->sessions.end()) {
                       it->second->closeByBackend();
@@ -1014,9 +1014,9 @@ namespace xdpu {
     void start(PortalResponse&& result, const std::string& handle, const std::string& sessionPath) {
       const auto sessionIt = sessions.find(sessionPath);
       if (sessionIt == sessions.end() || sessionIt->second->closed()) {
-        auto request = std::make_shared<Request>(connection, handle, []() {});
+        auto request = std::make_shared<Request>(connection, handle, [] {});
         result.returnResults(uint32_t{2}, PortalResults{});
-        loop.addTimer(0, [request = std::move(request)]() mutable { request.reset(); });
+        loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
         return;
       }
 

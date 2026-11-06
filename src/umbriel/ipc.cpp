@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <nlohmann/json.hpp>
+#include <print>
 #include <string_view>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -59,18 +60,18 @@ namespace xdpu {
           focusedWindowHandler(std::move(focusedWindowHandler)), focusedOutputHandler(std::move(focusedOutputHandler)) {
       const std::string path = socketPath();
       if (path.empty()) {
-        std::fprintf(stderr, "umbriel-ipc: compositor socket path is unavailable\n");
+        std::println(stderr, "umbriel-ipc: compositor socket path is unavailable");
         return;
       }
       fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
       if (fd < 0) {
-        std::fprintf(stderr, "umbriel-ipc: socket failed: %s\n", std::strerror(errno));
+        std::println(stderr, "umbriel-ipc: socket failed: {}", std::strerror(errno));
         return;
       }
 
       sockaddr_un address{};
       if (path.size() >= sizeof(address.sun_path)) {
-        std::fprintf(stderr, "umbriel-ipc: compositor socket path is too long\n");
+        std::println(stderr, "umbriel-ipc: compositor socket path is too long");
         closeFd(fd);
         fd = -1;
         return;
@@ -78,7 +79,7 @@ namespace xdpu {
       address.sun_family = AF_UNIX;
       path.copy(address.sun_path, path.size());
       if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
-        std::fprintf(stderr, "umbriel-ipc: connect failed: %s\n", std::strerror(errno));
+        std::println(stderr, "umbriel-ipc: connect failed: {}", std::strerror(errno));
         closeFd(fd);
         fd = -1;
         return;
@@ -96,7 +97,7 @@ namespace xdpu {
         if (written < 0 && errno == EINTR) {
           continue;
         }
-        std::fprintf(stderr, "umbriel-ipc: subscribe failed: %s\n", std::strerror(errno));
+        std::println(stderr, "umbriel-ipc: subscribe failed: {}", std::strerror(errno));
         closeFd(fd);
         fd = -1;
         return;
@@ -104,7 +105,7 @@ namespace xdpu {
 
       const int flags = fcntl(fd, F_GETFL, 0);
       if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        std::fprintf(stderr, "umbriel-ipc: failed to make socket nonblocking: %s\n", std::strerror(errno));
+        std::println(stderr, "umbriel-ipc: failed to make socket nonblocking: {}", std::strerror(errno));
         closeFd(fd);
         fd = -1;
         return;
@@ -149,7 +150,7 @@ namespace xdpu {
           loop.updateFd(watch, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
           return;
         }
-        std::fprintf(stderr, "umbriel-ipc: send failed: %s\n", std::strerror(errno));
+        std::println(stderr, "umbriel-ipc: send failed: {}", std::strerror(errno));
         disconnect();
         return;
       }
@@ -199,7 +200,7 @@ namespace xdpu {
           continue;
         }
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-          std::fprintf(stderr, "umbriel-ipc: receive failed: %s\n", std::strerror(errno));
+          std::println(stderr, "umbriel-ipc: receive failed: {}", std::strerror(errno));
           disconnect();
           return;
         }

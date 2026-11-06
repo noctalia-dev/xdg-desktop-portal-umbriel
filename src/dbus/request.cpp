@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <print>
 #include <sys/epoll.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -61,7 +62,7 @@ namespace xdpu {
     m_impl->closeHandler = std::move(closeHandler);
     m_impl->object = sdbus::createObject(connection, sdbus::ObjectPath{m_impl->path});
     m_impl->object->addVTable(
-                      sdbus::registerMethod("Close").implementedAs([this]() { m_impl->close(); })
+                      sdbus::registerMethod("Close").implementedAs([this] { m_impl->close(); })
     ).forInterface(kRequestInterface);
   }
 
@@ -101,11 +102,11 @@ namespace xdpu {
       int stdinPipe[2] = {-1, -1};
       int stdoutPipe[2] = {-1, -1};
       if (::pipe2(stdinPipe, O_CLOEXEC) < 0) {
-        std::fprintf(stderr, "dbus: pipe2(stdin) failed: %s\n", std::strerror(errno));
+        std::println(stderr, "dbus: pipe2(stdin) failed: {}", std::strerror(errno));
         return false;
       }
       if (::pipe2(stdoutPipe, O_CLOEXEC) < 0) {
-        std::fprintf(stderr, "dbus: pipe2(stdout) failed: %s\n", std::strerror(errno));
+        std::println(stderr, "dbus: pipe2(stdout) failed: {}", std::strerror(errno));
         closeFd(stdinPipe[0]);
         closeFd(stdinPipe[1]);
         return false;
@@ -113,7 +114,7 @@ namespace xdpu {
 
       pid = ::fork();
       if (pid < 0) {
-        std::fprintf(stderr, "dbus: fork failed for '%s': %s\n", command.c_str(), std::strerror(errno));
+        std::println(stderr, "dbus: fork failed for '{}': {}", command, std::strerror(errno));
         closeFd(stdinPipe[0]);
         closeFd(stdinPipe[1]);
         closeFd(stdoutPipe[0]);
@@ -137,7 +138,7 @@ namespace xdpu {
       stdinFd = stdinPipe[1];
       stdoutFd = stdoutPipe[0];
       if (!setNonBlocking(stdinFd) || !setNonBlocking(stdoutFd)) {
-        std::fprintf(stderr, "dbus: fcntl(O_NONBLOCK) failed for '%s': %s\n", command.c_str(), std::strerror(errno));
+        std::println(stderr, "dbus: fcntl(O_NONBLOCK) failed for '{}': {}", command, std::strerror(errno));
       }
       return true;
     }
@@ -150,7 +151,7 @@ namespace xdpu {
         }
       });
       if (stdoutWatch == 0) {
-        std::fprintf(stderr, "dbus: unable to watch child stdout for '%s'\n", command.c_str());
+        std::println(stderr, "dbus: unable to watch child stdout for '{}'", command);
         if (pid > 0) {
           ::kill(pid, SIGTERM);
         }
@@ -170,7 +171,7 @@ namespace xdpu {
         }
       });
       if (stdinWatch == 0) {
-        std::fprintf(stderr, "dbus: unable to watch child stdin for '%s'\n", command.c_str());
+        std::println(stderr, "dbus: unable to watch child stdin for '{}'", command);
         closeFd(stdinFd);
       }
     }
@@ -264,7 +265,7 @@ namespace xdpu {
         loop.removeTimer(waitTimer);
         waitTimer = 0;
       }
-      waitTimer = loop.addTimer(timeoutMs, [self]() { self->m_impl->pollExit(self); });
+      waitTimer = loop.addTimer(timeoutMs, [self] { self->m_impl->pollExit(self); });
     }
 
     void pollExit(const std::shared_ptr<AsyncProcess>& self) {

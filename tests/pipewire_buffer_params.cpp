@@ -3,6 +3,7 @@
 #include "pipewire/pipewire.cpp"
 
 #include <cstdlib>
+#include <print>
 
 namespace {
   struct Fixture {
@@ -27,7 +28,7 @@ namespace {
 
   void require(bool condition, const char* message) {
     if (!condition) {
-      std::fprintf(stderr, "%s\n", message);
+      std::println(stderr, "{}", message);
       std::exit(EXIT_FAILURE);
     }
   }
@@ -91,8 +92,9 @@ int __wrap_pw_stream_update_params(pw_stream*, const spa_pod** params, uint32_t 
           params[i], SPA_TYPE_OBJECT_ParamMeta, nullptr, SPA_PARAM_META_type, SPA_POD_Id(&type), SPA_PARAM_META_size,
           SPA_POD_Int(&bytes)
       );
-      if (type == SPA_META_Cursor)
+      if (type == SPA_META_Cursor) {
         fixture.cursorBytes = bytes;
+      }
     }
   }
   return fixture.updateResult;

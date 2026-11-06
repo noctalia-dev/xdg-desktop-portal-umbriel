@@ -16,7 +16,7 @@
 #include <unistd.h>
 #include <vector>
 
-using json = nlohmann::json;
+using nlohmann::json;
 
 namespace {
 

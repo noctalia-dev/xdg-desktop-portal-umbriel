@@ -1,0 +1,27 @@
+# Build
+build*/
+cmake-build-*/
+
+compile_commands.json
+
+# Editor / IDE
+.vscode/
+.idea/
+.cache/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nix
+.envrc
+.direnv/
+result/
+result
+result-*
+/TODO.md
+/pr-*.md
+

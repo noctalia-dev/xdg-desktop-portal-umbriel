@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <print>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
@@ -42,13 +43,13 @@ int main() {
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
     if (sigprocmask(SIG_BLOCK, &mask, nullptr) < 0) {
-      std::fprintf(stderr, "main: sigprocmask failed: %s\n", std::strerror(errno));
+      std::println(stderr, "main: sigprocmask failed: {}", std::strerror(errno));
       return 1;
     }
 
     const int sigFd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
     if (sigFd < 0) {
-      std::fprintf(stderr, "main: signalfd failed: %s\n", std::strerror(errno));
+      std::println(stderr, "main: signalfd failed: {}", std::strerror(errno));
       return 1;
     }
 
@@ -64,7 +65,7 @@ int main() {
           continue;
         }
         if (size < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-          std::fprintf(stderr, "main: signalfd read failed: %s\n", std::strerror(errno));
+          std::println(stderr, "main: signalfd read failed: {}", std::strerror(errno));
         }
         break;
       }
@@ -72,7 +73,7 @@ int main() {
     });
 
     if (sigWatch == 0) {
-      std::fprintf(stderr, "main: unable to add signalfd to loop\n");
+      std::println(stderr, "main: unable to add signalfd to loop");
       close(sigFd);
       return 1;
     }
@@ -82,7 +83,7 @@ int main() {
     close(sigFd);
     return wayland.connected() ? 0 : 1;
   } catch (const std::exception& error) {
-    std::fprintf(stderr, "main: fatal error: %s\n", error.what());
+    std::println(stderr, "main: fatal error: {}", error.what());
     return 1;
   }
 }

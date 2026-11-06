@@ -34,26 +34,36 @@ namespace {
           *m_bus, sdbus::ServiceName{"org.freedesktop.portal.Desktop"},
           sdbus::ObjectPath{"/org/freedesktop/portal/desktop"}
       );
-      m_portal->uponSignal("Activated").onInterface(kInterface).call([this](sdbus::ObjectPath session, Dict options) {
-        if (session != m_session)
-          return;
-        m_activation = options.at("activation_id").get<uint32_t>();
-        const uint32_t barrier = options.contains("barrier_id") ? options.at("barrier_id").get<uint32_t>() : 0;
-        std::println("activated id={} barrier={}", m_activation, barrier);
-      });
-      m_portal->uponSignal("Deactivated").onInterface(kInterface).call([this](sdbus::ObjectPath session, Dict options) {
-        if (session == m_session)
-          std::println("deactivated id={}", options.at("activation_id").get<uint32_t>());
-      });
-      m_portal->uponSignal("Disabled").onInterface(kInterface).call([this](sdbus::ObjectPath session, Dict) {
-        if (session == m_session)
-          std::puts("disabled");
-      });
+      m_portal->uponSignal("Activated")
+          .onInterface(kInterface)
+          .call([this](const sdbus::ObjectPath& session, Dict options) {
+            if (session != m_session) {
+              return;
+            }
+            m_activation = options.at("activation_id").get<uint32_t>();
+            const uint32_t barrier = options.contains("barrier_id") ? options.at("barrier_id").get<uint32_t>() : 0;
+            std::println("activated id={} barrier={}", m_activation, barrier);
+          });
+      m_portal->uponSignal("Deactivated")
+          .onInterface(kInterface)
+          .call([this](const sdbus::ObjectPath& session, Dict options) {
+            if (session == m_session) {
+              std::println("deactivated id={}", options.at("activation_id").get<uint32_t>());
+            }
+          });
+      m_portal->uponSignal("Disabled")
+          .onInterface(kInterface)
+          .call([this](const sdbus::ObjectPath& session, const Dict&) {
+            if (session == m_session) {
+              std::puts("disabled");
+            }
+          });
       m_portal->uponSignal("ZonesChanged")
           .onInterface(kInterface)
-          .call([this](sdbus::ObjectPath session, Dict options) {
-            if (session == m_session)
+          .call([this](const sdbus::ObjectPath& session, Dict options) {
+            if (session == m_session) {
               std::println("zones-changed invalidated={}", options.at("zone_set").get<uint32_t>());
+            }
           });
       sdbus::Variant version;
       m_portal->callMethod("Get")
@@ -73,8 +83,9 @@ namespace {
       }
       std::puts("properties version=2 capabilities=3");
       std::string sender = m_bus->getUniqueName();
-      if (!sender.empty() && sender.front() == ':')
+      if (!sender.empty() && sender.front() == ':') {
         sender.erase(0, 1);
+      }
       std::ranges::replace(sender, '.', '_');
       m_requestPrefix = "/org/freedesktop/portal/desktop/request/" + sender + "/";
       createSession();
@@ -99,15 +110,17 @@ namespace {
             {.fd = STDIN_FILENO, .events = POLLIN, .revents = 0},
             {.fd = m_receiver != nullptr ? ei_get_fd(m_receiver) : -1, .events = POLLIN, .revents = 0}
         };
-        if (poll(fds, 3, 100) < 0 && errno != EINTR)
+        if (poll(fds, 3, 100) < 0 && errno != EINTR) {
           throw std::runtime_error("poll failed");
+        }
         if ((fds[1].revents & POLLIN) != 0) {
           char bytes[2048];
           const ssize_t count = read(STDIN_FILENO, bytes, sizeof(bytes));
-          if (count > 0)
+          if (count > 0) {
             m_input.append(bytes, static_cast<size_t>(count));
-          else if (count == 0)
+          } else if (count == 0) {
             m_done = true;
+          }
           size_t newline = 0;
           while ((newline = m_input.find('\n')) != std::string::npos) {
             const std::string line = m_input.substr(0, newline);
@@ -125,15 +138,17 @@ namespace {
     };
 
     void clearPointers() {
-      for (const auto& pointer : m_pointers)
+      for (const auto& pointer : m_pointers) {
         ei_device_unref(pointer.device);
+      }
       m_pointers.clear();
     }
 
     void clearReceiver() {
       clearPointers();
-      if (m_receiver != nullptr)
+      if (m_receiver != nullptr) {
         m_receiver = ei_unref(m_receiver);
+      }
     }
 
     void snapshotRegions(const std::string& label) {
@@ -174,7 +189,7 @@ namespace {
       m_portal->callMethod("CreateSession2").onInterface(kInterface).withArguments(options).storeResultsTo(results);
       m_session = results.at("session_handle").get<sdbus::ObjectPath>();
       m_sessionProxy = sdbus::createProxy(*m_bus, sdbus::ServiceName{"org.freedesktop.portal.Desktop"}, m_session);
-      m_sessionProxy->uponSignal("Closed").onInterface("org.freedesktop.portal.Session").call([this](Dict) {
+      m_sessionProxy->uponSignal("Closed").onInterface("org.freedesktop.portal.Session").call([this](const Dict&) {
         m_sessionOpen = false;
         std::puts("session-closed");
       });
@@ -193,8 +208,9 @@ namespace {
           .call([this, method](uint32_t status, Dict results) {
             std::println("response {} status={}", method, status);
             if (status != 0) {
-              if (method == "Start")
+              if (method == "Start") {
                 m_sessionOpen = false;
+              }
               return;
             }
             if (method == "Start") {
@@ -218,16 +234,18 @@ namespace {
             } else if (method == "SetPointerBarriers") {
               const auto failed = results.at("failed_barriers").get<std::vector<uint32_t>>();
               std::println("barriers failed={}", failed.size());
-              for (const auto id : failed)
+              for (const auto id : failed) {
                 std::println("failed-barrier id={}", id);
+              }
             }
           });
       m_requests.push_back(std::move(proxy));
       const Dict options{{"handle_token", sdbus::Variant(token)}};
       sdbus::ObjectPath returned;
       invoke(options, returned);
-      if (returned != expected)
+      if (returned != expected) {
         throw std::runtime_error("frontend ignored request handle token");
+      }
       std::println("requested {}", method);
     }
 
@@ -243,8 +261,9 @@ namespace {
           Dict options = base;
           options.emplace("capabilities", sdbus::Variant(capabilities));
           options.emplace("persist_mode", sdbus::Variant(persistMode));
-          if (!m_restoreToken.empty())
+          if (!m_restoreToken.empty()) {
             options.emplace("restore_token", sdbus::Variant(m_restoreToken));
+          }
           m_portal->callMethod("Start")
               .onInterface(kInterface)
               .withArguments(m_session, std::string{}, options)
@@ -253,27 +272,31 @@ namespace {
       } else if (action == "save-token") {
         std::string path;
         input >> path;
-        if (path.empty() || m_lastRestoreToken.empty())
+        if (path.empty() || m_lastRestoreToken.empty()) {
           throw std::runtime_error("save-token requires a path and an issued restore token");
+        }
         std::ofstream file(path);
         file << m_lastRestoreToken << '\n';
         file.close();
-        if (!file)
+        if (!file) {
           throw std::runtime_error("cannot save restore token");
+        }
         std::puts("restore-token-saved");
       } else if (action == "load-token") {
         std::string path;
         input >> path;
         std::ifstream file(path);
-        if (path.empty() || !std::getline(file, m_restoreToken) || m_restoreToken.empty())
+        if (path.empty() || !std::getline(file, m_restoreToken) || m_restoreToken.empty()) {
           throw std::runtime_error("cannot load restore token");
+        }
         std::puts("restore-token-loaded");
       } else if (action == "forget-token") {
         m_restoreToken.clear();
         std::puts("restore-token-forgotten");
       } else if (action == "new-session") {
-        if (m_sessionOpen)
+        if (m_sessionOpen) {
           m_sessionProxy->callMethod("Close").onInterface("org.freedesktop.portal.Session");
+        }
         m_sessionOpen = false;
         clearReceiver();
         m_requests.clear();
@@ -288,8 +311,9 @@ namespace {
       } else if (action == "barrier") {
         uint32_t id = 1;
         int32_t x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-        if (!(input >> id >> x1 >> y1 >> x2 >> y2))
+        if (!(input >> id >> x1 >> y1 >> x2 >> y2)) {
           throw std::runtime_error("barrier requires id and four coordinates");
+        }
         uint32_t zoneSet = m_zoneSet;
         input >> zoneSet;
         request("SetPointerBarriers", [&](const Dict& options, sdbus::ObjectPath& handle) {
@@ -312,8 +336,9 @@ namespace {
         m_receiver = ei_new_receiver(nullptr);
         ei_configure_name(m_receiver, "Umbriel portal input capture test");
         const int ownedFd = dup(fd.get());
-        if (ownedFd < 0 || ei_setup_backend_fd(m_receiver, ownedFd) != 0)
+        if (ownedFd < 0 || ei_setup_backend_fd(m_receiver, ownedFd) != 0) {
           throw std::runtime_error("EI fd setup failed");
+        }
         std::puts("eis-connected-fd");
       } else if (action == "enable" || action == "disable") {
         m_portal->callMethod(action == "enable" ? "Enable" : "Disable")
@@ -335,13 +360,15 @@ namespace {
         m_sessionOpen = false;
         std::puts("requested close");
       } else if (action == "cancel") {
-        if (m_requests.empty())
+        if (m_requests.empty()) {
           throw std::runtime_error("no request to cancel");
+        }
         m_requests.back()->callMethod("Close").onInterface("org.freedesktop.portal.Request");
         std::puts("requested cancel");
       } else if (action == "attack-cancel") {
-        if (m_requests.empty())
+        if (m_requests.empty()) {
           throw std::runtime_error("no request to attack");
+        }
         auto other = sdbus::createSessionBusConnection();
         auto requestProxy = sdbus::createProxy(
             *other, sdbus::ServiceName{"org.freedesktop.impl.portal.desktop.umbriel"},
@@ -352,11 +379,13 @@ namespace {
           requestProxy->callMethod("Close").onInterface("org.freedesktop.impl.portal.Request");
         } catch (const sdbus::Error& error) {
           rejected = error.getName() == "org.freedesktop.portal.Error.NotAllowed";
-          if (!rejected)
+          if (!rejected) {
             throw;
+          }
         }
-        if (!rejected)
+        if (!rejected) {
           throw std::runtime_error("untrusted client cancelled a pending capture request");
+        }
         std::puts("untrusted-cancel rejected");
       } else if (action == "mark") {
         std::string marker;
@@ -364,8 +393,9 @@ namespace {
         std::println("mark {}", marker);
       } else if (action == "regions") {
         std::string label;
-        if (!(input >> label))
+        if (!(input >> label)) {
           throw std::runtime_error("regions requires a label");
+        }
         snapshotRegions(label);
       } else if (action == "quit") {
         m_done = true;
@@ -375,8 +405,9 @@ namespace {
     }
 
     void drainEi() {
-      if (m_receiver == nullptr)
+      if (m_receiver == nullptr) {
         return;
+      }
       ei_dispatch(m_receiver);
       while (ei_event* event = ei_get_event(m_receiver)) {
         switch (ei_event_get_type(event)) {
@@ -404,8 +435,9 @@ namespace {
         case EI_EVENT_DEVICE_REMOVED: {
           ei_device* device = ei_event_get_device(event);
           std::erase_if(m_pointers, [device](const PointerDevice& pointer) {
-            if (pointer.device != device)
+            if (pointer.device != device) {
               return false;
+            }
             std::println("ei-pointer-removed id={}", pointer.id);
             ei_device_unref(pointer.device);
             return true;
@@ -415,8 +447,9 @@ namespace {
         case EI_EVENT_DEVICE_RESUMED:
           std::puts("ei-device-ready");
           for (const auto& pointer : m_pointers) {
-            if (pointer.device == ei_event_get_device(event))
+            if (pointer.device == ei_event_get_device(event)) {
               std::println("ei-pointer-resumed id={}", pointer.id);
+            }
           }
           break;
         case EI_EVENT_DEVICE_START_EMULATING:

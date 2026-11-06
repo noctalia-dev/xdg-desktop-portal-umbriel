@@ -52,18 +52,29 @@ install: (build "release")
 uninstall:
     sudo meson compile -C build-release uninstall
 
-format:
-    find src \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
-    find src \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 grep -ZlP '\s+$' | xargs -0 -r sed -i 's/[[:space:]]*$//'
+# Meson test suite: unit tests. Integration scripts in tests/*.sh need an Umbriel build and run separately.
+test m=mode: (_ensure-configured m)
+    meson compile -C build-{{m}}
+    meson test -C build-{{m}} --print-errorlogs
 
-_clang_tidy m=mode *args:
+# C++ sources and tests, all under the root .clang-format.
+format:
+    find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
+    find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 grep -ZlP '\s+$' | xargs -0 -r sed -i 's/[[:space:]]*$//'
+
+# clang-tidy over src and tests, or only the given files: `just lint`, `just lint src/dbus/screencast.cpp`. Headers are
+# checked through the sources that include them. Another build directory is `mode=`, as in `just mode=release lint`.
+# -Wno-error keeps clang-only compiler warnings out of clang-tidy's errors.
+[no-exit-message]
+lint *files: (_ensure-configured mode)
     #!/usr/bin/env bash
     set -euo pipefail
-    src_root="$(realpath src)"
-    run-clang-tidy -quiet -use-color -p "build-{{m}}" -j "$(nproc)" -header-filter='\.\./src/.*' {{args}} "^${src_root}/.*"
-
-lint m=mode: (_ensure-configured m)
-    just _clang_tidy {{m}} '-warnings-as-errors=*'
+    meson compile -C build-{{mode}}
+    opts=(-quiet -p "build-{{mode}}" -header-filter='\.\./(src|tests)/.*' -warnings-as-errors='*' -extra-arg=-Wno-error)
+    if (($# > 0)); then
+        exec clang-tidy --use-color "${opts[@]}" "$@"
+    fi
+    run-clang-tidy -use-color -j "$(nproc)" "${opts[@]}" "^($(realpath src)|$(realpath tests))/.*"
 
 clean m=mode:
     #!/usr/bin/env bash

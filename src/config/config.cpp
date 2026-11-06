@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <print>
 #include <string_view>
 #include <sys/epoll.h>
 #include <sys/inotify.h>
@@ -94,7 +95,7 @@ namespace xdpu {
 
     } catch (const toml::parse_error& error) {
       const std::string description(error.description());
-      std::fprintf(stderr, "config: unable to parse %s: %s\n", path.c_str(), description.c_str());
+      std::println(stderr, "config: unable to parse {}: {}", path.c_str(), description);
     }
 
     return config;
@@ -106,7 +107,7 @@ namespace xdpu {
           configDirName(configDir.filename().string()), current(loadConfig()) {
       fd = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
       if (fd < 0) {
-        std::fprintf(stderr, "config: inotify unavailable; hot reload disabled: %s\n", std::strerror(errno));
+        std::println(stderr, "config: inotify unavailable; hot reload disabled: {}", std::strerror(errno));
         return;
       }
 
@@ -114,7 +115,7 @@ namespace xdpu {
 
       fdWatchId = loop.addFd(fd, EPOLLIN, [this](uint32_t) { handleInotify(); });
       if (fdWatchId == 0) {
-        std::fprintf(stderr, "config: unable to register inotify fd with loop; hot reload disabled\n");
+        std::println(stderr, "config: unable to register inotify fd with loop; hot reload disabled");
         closeFd(fd);
         fd = -1;
       }
@@ -175,7 +176,7 @@ namespace xdpu {
 
       dirWatch = ::inotify_add_watch(fd, configDir.c_str(), kDirWatchMask);
       if (dirWatch < 0 && errno != ENOENT) {
-        std::fprintf(stderr, "config: unable to watch directory %s: %s\n", configDir.c_str(), std::strerror(errno));
+        std::println(stderr, "config: unable to watch directory {}: {}", configDir.c_str(), std::strerror(errno));
       }
     }
 
@@ -191,7 +192,7 @@ namespace xdpu {
 
       fileWatch = ::inotify_add_watch(fd, path.c_str(), kFileWatchMask);
       if (fileWatch < 0 && errno != ENOENT) {
-        std::fprintf(stderr, "config: unable to watch file %s: %s\n", path.c_str(), std::strerror(errno));
+        std::println(stderr, "config: unable to watch file {}: {}", path.c_str(), std::strerror(errno));
       }
     }
 
@@ -211,11 +212,11 @@ namespace xdpu {
         }
         ancestorWatch = ::inotify_add_watch(fd, candidate.c_str(), kDirWatchMask);
         if (ancestorWatch >= 0) {
-          ancestorPath = candidate;
+          ancestorPath = std::move(candidate);
           return;
         }
         if (errno != ENOENT) {
-          std::fprintf(stderr, "config: unable to watch ancestor %s: %s\n", candidate.c_str(), std::strerror(errno));
+          std::println(stderr, "config: unable to watch ancestor {}: {}", candidate.c_str(), std::strerror(errno));
           return;
         }
       }
@@ -328,7 +329,7 @@ namespace xdpu {
             continue;
           }
           if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            std::fprintf(stderr, "config: inotify read failed: %s\n", std::strerror(errno));
+            std::println(stderr, "config: inotify read failed: {}", std::strerror(errno));
           }
           break;
         }

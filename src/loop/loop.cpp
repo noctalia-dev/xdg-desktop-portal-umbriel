@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <sys/epoll.h>
@@ -75,7 +76,7 @@ namespace xdpu {
     event.data.u64 = static_cast<uint64_t>(id);
 
     if (::epoll_ctl(m_impl->epollFd, EPOLL_CTL_ADD, fd, &event) < 0) {
-      std::fprintf(stderr, "loop: epoll_ctl ADD failed for fd %d: %s\n", fd, std::strerror(errno));
+      std::println(stderr, "loop: epoll_ctl ADD failed for fd {}: {}", fd, std::strerror(errno));
       return 0;
     }
 
@@ -94,7 +95,7 @@ namespace xdpu {
     event.data.u64 = static_cast<uint64_t>(id);
 
     if (::epoll_ctl(m_impl->epollFd, EPOLL_CTL_MOD, it->second.fd, &event) < 0) {
-      std::fprintf(stderr, "loop: epoll_ctl MOD failed for fd %d: %s\n", it->second.fd, std::strerror(errno));
+      std::println(stderr, "loop: epoll_ctl MOD failed for fd {}: {}", it->second.fd, std::strerror(errno));
       return;
     }
 
@@ -108,7 +109,7 @@ namespace xdpu {
     }
 
     if (::epoll_ctl(m_impl->epollFd, EPOLL_CTL_DEL, it->second.fd, nullptr) < 0 && errno != EBADF && errno != ENOENT) {
-      std::fprintf(stderr, "loop: epoll_ctl DEL failed for fd %d: %s\n", it->second.fd, std::strerror(errno));
+      std::println(stderr, "loop: epoll_ctl DEL failed for fd {}: {}", it->second.fd, std::strerror(errno));
     }
 
     m_impl->fds.erase(it);
@@ -121,7 +122,7 @@ namespace xdpu {
 
     const int timerFd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (timerFd < 0) {
-      std::fprintf(stderr, "loop: timerfd_create failed: %s\n", std::strerror(errno));
+      std::println(stderr, "loop: timerfd_create failed: {}", std::strerror(errno));
       return 0;
     }
 
@@ -134,7 +135,7 @@ namespace xdpu {
     }
 
     if (::timerfd_settime(timerFd, 0, &spec, nullptr) < 0) {
-      std::fprintf(stderr, "loop: timerfd_settime failed: %s\n", std::strerror(errno));
+      std::println(stderr, "loop: timerfd_settime failed: {}", std::strerror(errno));
       closeFd(timerFd);
       return 0;
     }
@@ -145,7 +146,7 @@ namespace xdpu {
     event.data.u64 = static_cast<uint64_t>(id);
 
     if (::epoll_ctl(m_impl->epollFd, EPOLL_CTL_ADD, timerFd, &event) < 0) {
-      std::fprintf(stderr, "loop: epoll_ctl ADD failed for timerfd %d: %s\n", timerFd, std::strerror(errno));
+      std::println(stderr, "loop: epoll_ctl ADD failed for timerfd {}: {}", timerFd, std::strerror(errno));
       closeFd(timerFd);
       return 0;
     }
@@ -159,7 +160,7 @@ namespace xdpu {
                                 continue;
                               }
                               if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                                std::fprintf(stderr, "loop: timerfd read failed: %s\n", std::strerror(errno));
+                                std::println(stderr, "loop: timerfd read failed: {}", std::strerror(errno));
                               }
                               break;
                             }
@@ -202,7 +203,7 @@ namespace xdpu {
         if (errno == EINTR) {
           continue;
         }
-        std::fprintf(stderr, "loop: epoll_wait failed: %s\n", std::strerror(errno));
+        std::println(stderr, "loop: epoll_wait failed: {}", std::strerror(errno));
         break;
       }
 

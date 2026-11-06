@@ -15,6 +15,7 @@
 #include <linux-dmabuf-v1-client-protocol.h>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <print>
 #include <string_view>
 #include <sys/epoll.h>
 #include <sys/mman.h>
@@ -123,7 +124,7 @@ namespace xdpu {
       }
       disconnected = true;
       cancelPreparedRead();
-      fprintf(stderr, "wayland: compositor connection closed\n");
+      std::println(stderr, "wayland: compositor connection closed");
       loop.quit();
     }
 
@@ -724,14 +725,14 @@ namespace xdpu {
 
       const uint32_t format = preferredCursorFormat(constraints.shmFormats);
       if (format == 0) {
-        std::fprintf(stderr, "wayland: cursor capture has no supported 32-bit SHM format\n");
+        std::println(stderr, "wayland: cursor capture has no supported 32-bit SHM format");
         return false;
       }
 
       const uint64_t stride = static_cast<uint64_t>(constraints.bufferWidth) * 4U;
       const uint64_t size = stride * constraints.bufferHeight;
       if (stride > INT32_MAX || size > INT32_MAX) {
-        std::fprintf(stderr, "wayland: cursor capture buffer is too large\n");
+        std::println(stderr, "wayland: cursor capture buffer is too large");
         return false;
       }
 
@@ -740,14 +741,14 @@ namespace xdpu {
         if (fd >= 0) {
           close(fd);
         }
-        std::fprintf(stderr, "wayland: unable to allocate cursor capture buffer: %s\n", std::strerror(errno));
+        std::println(stderr, "wayland: unable to allocate cursor capture buffer: {}", std::strerror(errno));
         return false;
       }
 
       void* mapping = mmap(nullptr, static_cast<size_t>(size), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
       if (mapping == MAP_FAILED) {
         close(fd);
-        std::fprintf(stderr, "wayland: unable to map cursor capture buffer: %s\n", std::strerror(errno));
+        std::println(stderr, "wayland: unable to map cursor capture buffer: {}", std::strerror(errno));
         return false;
       }
 
@@ -899,7 +900,7 @@ namespace xdpu {
       state->imageCapture->constraintsCb = [state](const CaptureConstraints& constraints) {
         configureCursorBuffer(*state, constraints);
       };
-      state->imageCapture->stoppedCb = [state]() { state->metadata.visible = false; };
+      state->imageCapture->stoppedCb = [state] { state->metadata.visible = false; };
       ext_image_copy_capture_cursor_session_v1_add_listener(state->session, &kCursorSessionListener, state);
       ext_image_copy_capture_session_v1_add_listener(imageSession, &kSessionListener, state->imageCapture.get());
       capture.cursor = std::move(cursor);
@@ -1151,7 +1152,7 @@ namespace xdpu {
         // original cursor-free session instead of recreating it with
         // PAINT_CURSORS.  This degrades to a hidden cursor rather than
         // irreversibly baking one into every frame.
-        std::fprintf(stderr, "wayland: cursor metadata capture is unavailable; hiding cursor\n");
+        std::println(stderr, "wayland: cursor metadata capture is unavailable; hiding cursor");
       }
       impl.flushDisplay();
       return capture;
@@ -1162,7 +1163,7 @@ namespace xdpu {
   WaylandContext::WaylandContext(Loop& loop) : m_impl(std::make_unique<Impl>(*this, loop)) {
     m_impl->display = wl_display_connect(nullptr);
     if (m_impl->display == nullptr) {
-      fprintf(stderr, "wayland: unable to connect to compositor\n");
+      std::println(stderr, "wayland: unable to connect to compositor");
       return;
     }
 
@@ -1247,12 +1248,12 @@ namespace xdpu {
       const std::string& outputName, CaptureCursorMode cursorMode, ConstraintsCallback constraintsCb
   ) {
     if (m_impl->outputSourceManager == nullptr) {
-      fprintf(stderr, "wayland: output capture source manager is unavailable\n");
+      std::println(stderr, "wayland: output capture source manager is unavailable");
       return nullptr;
     }
     Impl::OutputState* output = m_impl->findOutput(outputName);
     if (output == nullptr) {
-      fprintf(stderr, "wayland: output '%s' is unavailable\n", outputName.c_str());
+      std::println(stderr, "wayland: output '{}' is unavailable", outputName);
       return nullptr;
     }
 
@@ -1271,12 +1272,12 @@ namespace xdpu {
       const std::string& identifier, CaptureCursorMode cursorMode, ConstraintsCallback constraintsCb
   ) {
     if (m_impl->toplevelSourceManager == nullptr) {
-      fprintf(stderr, "wayland: toplevel capture source manager is unavailable\n");
+      std::println(stderr, "wayland: toplevel capture source manager is unavailable");
       return nullptr;
     }
     Impl::ToplevelState* toplevel = m_impl->findToplevel(identifier);
     if (toplevel == nullptr) {
-      fprintf(stderr, "wayland: toplevel '%s' is unavailable\n", identifier.c_str());
+      std::println(stderr, "wayland: toplevel '{}' is unavailable", identifier);
       return nullptr;
     }
 

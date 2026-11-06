@@ -112,12 +112,15 @@ namespace {
     }
 
     ~Client() {
-      if (m_inputSource)
+      if (m_inputSource) {
         pw_loop_destroy_source(pw_main_loop_get_loop(m_loop), m_inputSource);
-      if (m_stream)
+      }
+      if (m_stream) {
         pw_stream_destroy(m_stream);
-      if (m_loop)
+      }
+      if (m_loop) {
         pw_main_loop_destroy(m_loop);
+      }
       try {
         if (m_bus && !m_session.empty()) {
           auto session = sdbus::createProxy(*m_bus, sdbus::ServiceName{kService}, m_session);
@@ -135,8 +138,9 @@ namespace {
 
   private:
     static void require(bool condition, const char* message) {
-      if (!condition)
+      if (!condition) {
         throw std::runtime_error(message);
+      }
     }
     void fail(const std::string& message) {
       std::println(stderr, "screencast-test-client: {}", message);
@@ -146,13 +150,15 @@ namespace {
     static void stateChanged(void* data, pw_stream_state, pw_stream_state state, const char* error) {
       auto& self = *static_cast<Client*>(data);
       std::println("state {}", pw_stream_state_as_string(state));
-      if (state == PW_STREAM_STATE_ERROR)
+      if (state == PW_STREAM_STATE_ERROR) {
         self.fail(error ? error : "PipeWire stream error");
+      }
     }
     static void formatChanged(void* data, uint32_t id, const spa_pod* param) {
       auto& self = *static_cast<Client*>(data);
-      if (id != SPA_PARAM_Format || !param)
+      if (id != SPA_PARAM_Format || !param) {
         return;
+      }
       if (spa_format_video_raw_parse(param, &self.m_info) < 0) {
         self.fail("cannot parse negotiated video format");
         return;
@@ -171,14 +177,16 @@ namespace {
               SPA_PARAM_META_size, SPA_POD_Int(sizeof(spa_meta_header))
           ))
       };
-      if (pw_stream_update_params(self.m_stream, params, 2) < 0)
+      if (pw_stream_update_params(self.m_stream, params, 2) < 0) {
         self.fail("cannot negotiate capture buffers");
+      }
     }
     static void process(void* data) {
       auto& self = *static_cast<Client*>(data);
       pw_buffer* buffer = pw_stream_dequeue_buffer(self.m_stream);
-      if (!buffer)
+      if (!buffer) {
         return;
+      }
       spa_buffer* spaBuffer = buffer->buffer;
       if (spaBuffer && spaBuffer->n_datas > 0) {
         const spa_data& pixels = spaBuffer->datas[0];
@@ -230,8 +238,9 @@ namespace {
         return;
       }
       if (count < 0) {
-        if (errno != EAGAIN && errno != EINTR)
+        if (errno != EAGAIN && errno != EINTR) {
           self.fail("cannot read commands");
+        }
         return;
       }
       self.m_input.append(bytes, static_cast<size_t>(count));
@@ -246,8 +255,9 @@ namespace {
           pw_main_loop_quit(self.m_loop);
         } else if (action == "expect") {
           command >> self.m_expectation >> self.m_width >> self.m_height >> std::hex;
-          for (uint32_t& pixel : self.m_pixels)
+          for (uint32_t& pixel : self.m_pixels) {
             command >> pixel;
+          }
           if (command.fail() || self.m_expectation.empty() || !self.m_width || !self.m_height) {
             self.fail("invalid expectation: " + line);
             return;

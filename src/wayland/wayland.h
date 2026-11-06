@@ -139,8 +139,8 @@ namespace xdpu {
       );
       ~CaptureSession();
 
-      [[nodiscard]] bool hasCursorMetadata() const;
-      [[nodiscard]] const CursorMetadata* cursorMetadata() const;
+      bool hasCursorMetadata() const;
+      const CursorMetadata* cursorMetadata() const;
 
       Impl& impl;
       std::shared_ptr<char> frameLifetime = std::make_shared<char>();
@@ -155,9 +155,9 @@ namespace xdpu {
       CaptureStoppedCallback stoppedCb;
       bool stopped = false;
     };
-    std::unique_ptr<CaptureSession>
+    [[nodiscard]] std::unique_ptr<CaptureSession>
     createOutputCapture(const std::string& outputName, CaptureCursorMode cursorMode, ConstraintsCallback constraintsCb);
-    std::unique_ptr<CaptureSession> createToplevelCapture(
+    [[nodiscard]] std::unique_ptr<CaptureSession> createToplevelCapture(
         const std::string& identifier, CaptureCursorMode cursorMode, ConstraintsCallback constraintsCb
     );
     struct CaptureFrame {
@@ -180,7 +180,7 @@ namespace xdpu {
     // Returns an owning frame handle.  Destroy it to cancel a pending capture.
     // Callbacks fire at most once; after that the frame proxy is already destroyed.
     // damageBuffer forces a full-buffer copy; false waits for new content.
-    std::unique_ptr<CaptureFrame> captureFrame(
+    [[nodiscard]] std::unique_ptr<CaptureFrame> captureFrame(
         CaptureSession& session, struct wl_buffer* buffer, bool damageBuffer, FrameReadyCallback onReady,
         FrameFailedCallback onFailed
     );

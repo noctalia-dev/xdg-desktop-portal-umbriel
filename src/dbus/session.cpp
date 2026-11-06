@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <pipewire/stream.h>
+#include <print>
 #include <sdbus-c++/sdbus-c++.h>
 #include <spa/buffer/buffer.h>
 #include <spa/buffer/meta.h>
@@ -17,11 +18,11 @@ namespace xdpu {
   namespace {
 
     constexpr char kSessionInterface[] = "org.freedesktop.impl.portal.Session";
-    constexpr uint64_t kNsecPerSec = 1000000000ull;
+    constexpr uint64_t kNsecPerSec = 1000000000ULL;
 
-    uint32_t sourceType(Session::SourceKind kind) { return kind == Session::SourceKind::Monitor ? 1u : 2u; }
+    uint32_t sourceType(Session::SourceKind kind) { return kind == Session::SourceKind::Monitor ? 1U : 2U; }
 
-    std::string kindName(Session::SourceKind kind) {
+    std::string_view kindName(Session::SourceKind kind) {
       switch (kind) {
       case Session::SourceKind::Monitor:
         return "monitor";
@@ -55,7 +56,7 @@ namespace xdpu {
       std::unique_ptr<WaylandContext::CaptureFrame> pendingFrame;
       pw_buffer* inFlightBuffer = nullptr;
       uint64_t sequence = 0;
-      std::chrono::steady_clock::time_point lastFrame{};
+      std::chrono::steady_clock::time_point lastFrame;
 
       ~StreamState() { stop(); }
 
@@ -127,7 +128,7 @@ namespace xdpu {
           return;
         }
         std::weak_ptr<StreamState> weak = shared_from_this();
-        fpsTimer = loop->addTimer(delayMs, [weak]() {
+        fpsTimer = loop->addTimer(delayMs, [weak] {
           if (auto self = weak.lock()) {
             self->fpsTimer = 0;
             self->processRequest();
@@ -187,7 +188,7 @@ namespace xdpu {
         reconfiguring = true;
         reconfigureTarget = constraints;
         if (!stream->reconfigure(reconfigureTarget)) {
-          std::fprintf(stderr, "session: unable to reconfigure capture stream %u\n", stream->nodeId());
+          std::println(stderr, "session: unable to reconfigure capture stream {}", stream->nodeId());
           stop();
           if (backendClosedHandler) {
             backendClosedHandler();
@@ -337,7 +338,7 @@ namespace xdpu {
             state->constraintsChanged(newConstraints);
           }
         };
-        capture->stoppedCb = [weak]() {
+        capture->stoppedCb = [weak] {
           if (auto state = weak.lock()) {
             state->captureStopped();
           }
@@ -404,9 +405,9 @@ namespace xdpu {
       object = sdbus::createObject(connection, sdbus::ObjectPath{this->path});
       object
           ->addVTable(
-              sdbus::registerMethod("Close").implementedAs([this]() { close(false); }),
+              sdbus::registerMethod("Close").implementedAs([this] { close(false); }),
               sdbus::registerSignal("Closed").withParameters(),
-              sdbus::registerProperty("version").withGetter([]() { return uint32_t{1}; })
+              sdbus::registerProperty("version").withGetter([] { return uint32_t{1}; })
           )
           .forInterface(kSessionInterface);
     }
@@ -422,7 +423,7 @@ namespace xdpu {
         try {
           object->emitSignal("Closed").onInterface(kSessionInterface).withArguments();
         } catch (const std::exception& error) {
-          std::fprintf(stderr, "session: failed to emit Closed for %s: %s\n", path.c_str(), error.what());
+          std::println(stderr, "session: failed to emit Closed for {}: {}", path, error.what());
         }
       }
 
@@ -457,7 +458,7 @@ namespace xdpu {
       uint32_t sourceTypes, bool multiple, uint32_t cursorMode, uint32_t persistMode,
       std::vector<Selection> restoreSelections, bool restoreDynamic
   ) {
-    m_impl->selectedSourceTypes = (sourceTypes & 0x3u) == 0 ? 1u : (sourceTypes & 0x3u);
+    m_impl->selectedSourceTypes = (sourceTypes & 0x3U) == 0 ? 1U : (sourceTypes & 0x3U);
     m_impl->allowMultiple = multiple;
     m_impl->selectedCursorMode = cursorMode;
     m_impl->selectedPersistMode = std::min<uint32_t>(persistMode, 2);
@@ -504,7 +505,7 @@ namespace xdpu {
 
     std::weak_ptr<Impl::StreamState> weak = state;
     state->attachCaptureCallbacks();
-    state->stream->onProcessRequest = [weak]() {
+    state->stream->onProcessRequest = [weak] {
       if (auto streamState = weak.lock()) {
         streamState->processRequest();
       }

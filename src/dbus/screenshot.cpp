@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <print>
 #include <sdbus-c++/sdbus-c++.h>
 #include <set>
 #include <sstream>
@@ -78,13 +79,13 @@ namespace xdpu {
         if (!selection.is_object() || selection.value("kind", "") != "monitor") {
           return std::nullopt;
         }
-        const std::string name = selection.value("output", "");
+        std::string name = selection.value("output", "");
         if (name.empty()) {
           return std::nullopt;
         }
         return name;
       } catch (const std::exception& error) {
-        std::fprintf(stderr, "screenshot: chooser returned invalid JSON: %s\n", error.what());
+        std::println(stderr, "screenshot: chooser returned invalid JSON: {}", error.what());
         return std::nullopt;
       }
     }
@@ -116,7 +117,7 @@ namespace xdpu {
         needSwapRB = true;
         break;
       default:
-        std::fprintf(stderr, "screenshot: unsupported screenshot DRM format 0x%08x\n", shot.format);
+        std::println(stderr, "screenshot: unsupported screenshot DRM format 0x{:08x}", shot.format);
         return std::nullopt;
       }
 
@@ -161,7 +162,7 @@ namespace xdpu {
       std::error_code error;
       std::filesystem::create_directories(*dir, error);
       if (error) {
-        std::fprintf(stderr, "screenshot: unable to create %s: %s\n", dir->c_str(), error.message().c_str());
+        std::println(stderr, "screenshot: unable to create {}: {}", dir->c_str(), error.message());
         return std::nullopt;
       }
       (void)::chmod(dir->c_str(), 0700);
@@ -176,8 +177,8 @@ namespace xdpu {
           data, cairoFormat, static_cast<int>(shot.width), static_cast<int>(shot.height), static_cast<int>(shot.stride)
       );
       if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        std::fprintf(
-            stderr, "screenshot: cairo surface creation failed: %s\n",
+        std::println(
+            stderr, "screenshot: cairo surface creation failed: {}",
             cairo_status_to_string(cairo_surface_status(surface))
         );
         cairo_surface_destroy(surface);
@@ -188,8 +189,8 @@ namespace xdpu {
       const cairo_status_t status = cairo_surface_write_to_png(surface, path.c_str());
       cairo_surface_destroy(surface);
       if (status != CAIRO_STATUS_SUCCESS) {
-        std::fprintf(
-            stderr, "screenshot: cairo PNG write failed for %s: %s\n", path.c_str(), cairo_status_to_string(status)
+        std::println(
+            stderr, "screenshot: cairo PNG write failed for {}: {}", path.c_str(), cairo_status_to_string(status)
         );
         return std::nullopt;
       }
@@ -292,11 +293,8 @@ namespace xdpu {
     Config config;
     WaylandContext& wayland;
 
-    Impl(
-        Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, const Config& config,
-        WaylandContext& wayland
-    )
-        : loop(loop), connection(connection), object(object), config(config), wayland(wayland) {
+    Impl(Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, Config config, WaylandContext& wayland)
+        : loop(loop), connection(connection), object(object), config(std::move(config)), wayland(wayland) {
       object
           .addVTable(
               sdbus::registerMethod("Screenshot")
@@ -322,8 +320,8 @@ namespace xdpu {
                   })
                   .withInputParamNames("handle", "app_id", "parent_window", "options")
                   .withOutputParamNames("response", "results"),
-              sdbus::registerProperty("AvailableTargets").withGetter([]() { return uint32_t{1}; }),
-              sdbus::registerProperty("version").withGetter([]() { return uint32_t{2}; })
+              sdbus::registerProperty("AvailableTargets").withGetter([] { return uint32_t{1}; }),
+              sdbus::registerProperty("version").withGetter([] { return uint32_t{2}; })
           )
           .forInterface(kInterface);
     }
@@ -377,7 +375,7 @@ namespace xdpu {
 
       void attachRequest(const std::string& handle) {
         std::weak_ptr<Operation> weak = shared_from_this();
-        request = std::make_shared<Request>(portal.connection, handle, [weak]() {
+        request = std::make_shared<Request>(portal.connection, handle, [weak] {
           if (auto op = weak.lock()) {
             op->cancel();
           }
@@ -389,10 +387,10 @@ namespace xdpu {
           return;
         }
         auto doomed = std::move(request);
-        portal.loop.addTimer(0, [doomed = std::move(doomed)]() mutable { doomed.reset(); });
+        portal.loop.addTimer(0, [doomed = std::move(doomed)] mutable { doomed.reset(); });
       }
 
-      void finish(uint32_t response, PortalResults results = {}) {
+      void finish(uint32_t response, const PortalResults& results = {}) {
         if (done) {
           return;
         }
@@ -427,7 +425,7 @@ namespace xdpu {
       void finishWithUri(const std::string& path) {
         PortalResults results;
         results.emplace("uri", sdbus::Variant{std::string{"file://"} + path});
-        finish(0, std::move(results));
+        finish(0, results);
       }
 
       // Start an async output capture.  onComplete is called on success;
@@ -455,20 +453,20 @@ namespace xdpu {
         );
 
         if (!capture->session) {
-          std::fprintf(stderr, "screenshot: unable to create capture session for output '%s'\n", outputName.c_str());
+          std::println(stderr, "screenshot: unable to create capture session for output '{}'", outputName);
           finish(failureResponse, {});
           return;
         }
 
         // Timeout: cancel if the capture doesn't complete within 5 seconds.
-        timeoutId = portal.loop.addTimer(5000, [weakSelf, failureResponse]() {
+        timeoutId = portal.loop.addTimer(5000, [weakSelf, failureResponse] {
           auto self = weakSelf.lock();
           if (!self) {
             return;
           }
           self->timeoutId = 0;
           if (!self->done) {
-            std::fprintf(stderr, "screenshot: capture timed out\n");
+            std::println(stderr, "screenshot: capture timed out");
             self->finish(failureResponse, {});
           }
         });
@@ -477,14 +475,14 @@ namespace xdpu {
       template <typename Callback>
       void onCaptureConstraints(CaptureState& cap, uint32_t failureResponse, Callback onComplete) {
         if (cap.constraints.bufferWidth == 0 || cap.constraints.bufferHeight == 0) {
-          std::fprintf(stderr, "screenshot: empty buffer constraints\n");
+          std::println(stderr, "screenshot: empty buffer constraints");
           finish(failureResponse, {});
           return;
         }
 
         const uint32_t format = WaylandContext::preferredShmFormat(cap.constraints.shmFormats);
         if (format == 0) {
-          std::fprintf(stderr, "screenshot: no supported SHM format\n");
+          std::println(stderr, "screenshot: no supported SHM format");
           finish(failureResponse, {});
           return;
         }
@@ -494,14 +492,14 @@ namespace xdpu {
 
         cap.fd = memfd_create("umbriel-screenshot", MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (cap.fd < 0 || ftruncate(cap.fd, static_cast<off_t>(cap.mappingSize)) < 0) {
-          std::fprintf(stderr, "screenshot: memfd allocation failed: %s\n", std::strerror(errno));
+          std::println(stderr, "screenshot: memfd allocation failed: {}", std::strerror(errno));
           finish(failureResponse, {});
           return;
         }
 
         cap.mapping = mmap(nullptr, cap.mappingSize, PROT_READ | PROT_WRITE, MAP_SHARED, cap.fd, 0);
         if (cap.mapping == MAP_FAILED) {
-          std::fprintf(stderr, "screenshot: mmap failed: %s\n", std::strerror(errno));
+          std::println(stderr, "screenshot: mmap failed: {}", std::strerror(errno));
           finish(failureResponse, {});
           return;
         }
@@ -510,7 +508,7 @@ namespace xdpu {
             cap.constraints.bufferWidth, cap.constraints.bufferHeight, format, stride, cap.fd, cap.mappingSize
         );
         if (cap.buffer == nullptr) {
-          std::fprintf(stderr, "screenshot: wl_buffer creation failed\n");
+          std::println(stderr, "screenshot: wl_buffer creation failed");
           finish(failureResponse, {});
           return;
         }
@@ -543,7 +541,7 @@ namespace xdpu {
               if (!self || self->done) {
                 return;
               }
-              std::fprintf(stderr, "screenshot: capture frame failed\n");
+              std::println(stderr, "screenshot: capture frame failed");
               self->finish(failureResponse, {});
             }
         );
@@ -560,7 +558,7 @@ namespace xdpu {
         }
         startCapture(
             outputName, CaptureCursorMode::Embedded, failureResponse,
-            [failureResponse](std::shared_ptr<Operation> self, WaylandContext::ScreenshotResult shot) {
+            [failureResponse](const std::shared_ptr<Operation>& self, WaylandContext::ScreenshotResult shot) {
               const auto path = savePng(shot);
               if (!path) {
                 self->finish(failureResponse, {});
@@ -591,7 +589,7 @@ namespace xdpu {
           return;
         }
         auto self = std::static_pointer_cast<ScreenshotOperation>(shared_from_this());
-        portal.loop.addTimer(0, [self]() { self->captureFirstOutput(); });
+        portal.loop.addTimer(0, [self] { self->captureFirstOutput(); });
       }
 
       void runExternal(bool interactive) {
@@ -600,7 +598,7 @@ namespace xdpu {
           command += " --interactive";
         }
         auto self = std::static_pointer_cast<ScreenshotOperation>(shared_from_this());
-        process = AsyncProcess::start(portal.loop, std::move(command), {}, [self](ProcessResult child) {
+        process = AsyncProcess::start(portal.loop, std::move(command), {}, [self](const ProcessResult& child) {
           if (self->done) {
             return;
           }
@@ -615,7 +613,7 @@ namespace xdpu {
 
       void runChooser() {
         if (portal.config.screencast.chooserCmd.empty()) {
-          std::fprintf(stderr, "screenshot: no chooser command configured; cancelling interactive screenshot\n");
+          std::println(stderr, "screenshot: no chooser command configured; cancelling interactive screenshot");
           finish(1, {});
           return;
         }
@@ -624,14 +622,14 @@ namespace xdpu {
         std::string input = portal.wayland.buildChooserJson(1, false);
         input.push_back('\n');
         process = AsyncProcess::start(
-            portal.loop, portal.config.screencast.chooserCmd, std::move(input), [self](ProcessResult child) {
+            portal.loop, portal.config.screencast.chooserCmd, std::move(input), [self](const ProcessResult& child) {
               if (self->done) {
                 return;
               }
               if (child.commandNotFound()) {
-                std::fprintf(
-                    stderr, "screenshot: chooser command not found (%s); falling back to first output\n",
-                    self->portal.config.screencast.chooserCmd.c_str()
+                std::println(
+                    stderr, "screenshot: chooser command not found ({}); falling back to first output",
+                    self->portal.config.screencast.chooserCmd
                 );
                 self->captureFirstOutput();
                 return;
@@ -684,7 +682,7 @@ namespace xdpu {
         // and a later capture would sample that overlay instead of the content.
         outputs = portal.wayland.outputs();
         if (outputs.empty()) {
-          std::fprintf(stderr, "screenshot: no outputs to pick a color from\n");
+          std::println(stderr, "screenshot: no outputs to pick a color from");
           finish(1, {});
           return;
         }
@@ -695,13 +693,13 @@ namespace xdpu {
       void finishWithColor(const Color& color) {
         PortalResults results;
         results.emplace("color", sdbus::Variant{color});
-        finish(0, std::move(results));
+        finish(0, results);
       }
 
       void runExternal() {
         auto self = std::static_pointer_cast<PickColorOperation>(shared_from_this());
-        process =
-            AsyncProcess::start(portal.loop, portal.config.screenshot.colorPickCmd, {}, [self](ProcessResult child) {
+        process = AsyncProcess::start(
+            portal.loop, portal.config.screenshot.colorPickCmd, {}, [self](const ProcessResult& child) {
               if (self->done) {
                 return;
               }
@@ -711,7 +709,8 @@ namespace xdpu {
                 return;
               }
               self->finishWithColor(*color);
-            });
+            }
+        );
       }
 
       void captureNextOutput() {
@@ -728,18 +727,18 @@ namespace xdpu {
         // sampled instead of the content beneath it.
         startCapture(
             outputs[frames.size()].name, CaptureCursorMode::Hidden, 1,
-            [self](std::shared_ptr<Operation> /*base*/, WaylandContext::ScreenshotResult shot) {
+            [self](const std::shared_ptr<Operation>& /*base*/, WaylandContext::ScreenshotResult shot) {
               self->cancelTimeout();
               self->frames.push_back({self->outputs[self->frames.size()], std::move(shot)});
               // Replace the capture state outside its own frame callback.
-              self->portal.loop.addTimer(0, [self]() { self->captureNextOutput(); });
+              self->portal.loop.addTimer(0, [self] { self->captureNextOutput(); });
             }
         );
       }
 
       void runSlurp() {
         auto self = std::static_pointer_cast<PickColorOperation>(shared_from_this());
-        process = AsyncProcess::start(portal.loop, "slurp -p -f \"%x %y %o\"", {}, [self](ProcessResult child) {
+        process = AsyncProcess::start(portal.loop, "slurp -p -f \"%x %y %o\"", {}, [self](const ProcessResult& child) {
           if (self->done) {
             return;
           }
@@ -774,13 +773,13 @@ namespace xdpu {
       void sample(const PickPoint& point) {
         const Frame* frame = frameAt(point);
         if (frame == nullptr) {
-          std::fprintf(stderr, "screenshot: no captured output contains %d,%d\n", point.x, point.y);
+          std::println(stderr, "screenshot: no captured output contains {},{}", point.x, point.y);
           finish(1, {});
           return;
         }
         const auto color = sampleColor(frame->shot, frame->output, point.x, point.y);
         if (!color) {
-          std::fprintf(stderr, "screenshot: unsupported capture format for color picking\n");
+          std::println(stderr, "screenshot: unsupported capture format for color picking");
           finish(1, {});
           return;
         }

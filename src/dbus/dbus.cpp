@@ -13,8 +13,10 @@
 #include <cstdio>
 #include <exception>
 #include <poll.h>
+#include <print>
 #include <sdbus-c++/sdbus-c++.h>
 #include <sys/epoll.h>
+#include <utility>
 
 namespace xdpu {
 
@@ -61,8 +63,8 @@ namespace xdpu {
     int eventFdWatch = 0;
     int timeoutTimer = 0;
 
-    Impl(Loop& loop, const Config& config, WaylandContext& wayland, PipeWireContext& pipewire)
-        : loop(loop), config(config), wayland(wayland), pipewire(pipewire) {
+    Impl(Loop& loop, Config config, WaylandContext& wayland, PipeWireContext& pipewire)
+        : loop(loop), config(std::move(config)), wayland(wayland), pipewire(pipewire) {
       std::signal(SIGPIPE, SIG_IGN);
       connection = sdbus::createSessionBusConnection(sdbus::ServiceName{kBusName});
       desktopObject = sdbus::createObject(*connection, sdbus::ObjectPath{kDesktopPath});
@@ -117,7 +119,7 @@ namespace xdpu {
       if (watchId == 0) {
         watchId = loop.addFd(fd, events, std::move(callback));
         if (watchId == 0) {
-          std::fprintf(stderr, "dbus: failed to register bus fd %d with event loop\n", fd);
+          std::println(stderr, "dbus: failed to register bus fd {} with event loop", fd);
           return;
         }
         currentFd = fd;
@@ -135,7 +137,7 @@ namespace xdpu {
       try {
         pollData = connection->getEventLoopPollData();
       } catch (const std::exception& error) {
-        std::fprintf(stderr, "dbus: getEventLoopPollData failed: %s\n", error.what());
+        std::println(stderr, "dbus: getEventLoopPollData failed: {}", error.what());
         return;
       }
 
@@ -148,7 +150,7 @@ namespace xdpu {
       }
       const int timeoutMs = pollData.getPollTimeout();
       if (timeoutMs >= 0) {
-        timeoutTimer = loop.addTimer(timeoutMs, [this]() { drain(); });
+        timeoutTimer = loop.addTimer(timeoutMs, [this] { drain(); });
       }
     }
 
@@ -160,7 +162,7 @@ namespace xdpu {
         while (connection->processPendingEvent()) {
         }
       } catch (const std::exception& error) {
-        std::fprintf(stderr, "dbus: processPendingEvent failed: %s\n", error.what());
+        std::println(stderr, "dbus: processPendingEvent failed: {}", error.what());
       }
       refreshPollData();
     }

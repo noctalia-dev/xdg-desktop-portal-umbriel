@@ -24,10 +24,10 @@ namespace xdpu {
 
     struct pw_loop* pwLoop() const;
 
-    std::unique_ptr<PipeWireStream> createStream(
+    [[nodiscard]] std::unique_ptr<PipeWireStream> createStream(
         uint32_t width, uint32_t height, const CaptureConstraints& constraints, uint32_t maxFps, bool cursorMetadata
     );
-    [[nodiscard]] bool supportsCursorMetadata() const;
+    bool supportsCursorMetadata() const;
     // Process any pending PipeWire events (e.g. to resolve node IDs after stream connect).
     void processPending();
 
@@ -47,16 +47,16 @@ namespace xdpu {
 
     uint32_t nodeId() const;
 
-    struct pw_buffer* dequeueBuffer();
+    [[nodiscard]] struct pw_buffer* dequeueBuffer();
     void queueBuffer(struct pw_buffer* buf);
     void discardBuffer(struct pw_buffer* buf);
-    bool prepareFrame(struct pw_buffer* buffer, uint32_t transform);
-    bool reconfigure(const CaptureConstraints& constraints);
+    [[nodiscard]] bool prepareFrame(struct pw_buffer* buffer, uint32_t transform);
+    [[nodiscard]] bool reconfigure(const CaptureConstraints& constraints);
     bool setActive(bool active);
     void disconnect();
     bool connected() const;
     // Unlike connected(), false while PAUSED (no user pulling frames).
-    [[nodiscard]] bool streaming() const;
+    bool streaming() const;
     void triggerProcess();
 
     CaptureBuffer* captureBuffer(struct pw_buffer* buffer) const;

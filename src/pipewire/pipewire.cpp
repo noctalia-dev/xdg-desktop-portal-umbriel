@@ -20,6 +20,7 @@
 #include <pipewire/properties.h>
 #include <pipewire/stream.h>
 #include <pipewire/version.h>
+#include <print>
 #include <spa/buffer/alloc.h>
 #include <spa/buffer/meta.h>
 #include <spa/param/buffers.h>
@@ -188,7 +189,7 @@ namespace xdpu {
       }
       // The core is still emitting this event; reconnect from the next createStream().
       static_cast<CoreConnection*>(data)->lost = true;
-      fprintf(stderr, "pipewire: connection lost: %s\n", message == nullptr ? spa_strerror(res) : message);
+      std::println(stderr, "pipewire: connection lost: {}", message == nullptr ? spa_strerror(res) : message);
     }
 
     constexpr pw_core_events kCoreEvents = {
@@ -462,13 +463,13 @@ namespace xdpu {
       const size_t size = static_cast<size_t>(stride) * height;
       const int fd = createMemfd("umbriel-pw-shm", size);
       if (fd < 0) {
-        fprintf(stderr, "pipewire: memfd allocation failed: %s\n", std::strerror(errno));
+        std::println(stderr, "pipewire: memfd allocation failed: {}", std::strerror(errno));
         return nullptr;
       }
 
       void* map = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
       if (map == MAP_FAILED) {
-        fprintf(stderr, "pipewire: mmap failed for SHM buffer: %s\n", std::strerror(errno));
+        std::println(stderr, "pipewire: mmap failed for SHM buffer: {}", std::strerror(errno));
         close(fd);
         return nullptr;
       }
@@ -498,7 +499,9 @@ namespace xdpu {
 
       if (allocation.bo != nullptr) {
         if (buffer->n_datas != allocation.planes.size()) {
-          fprintf(stderr, "pipewire: expected %zu DMA-BUF planes, got %u\n", allocation.planes.size(), buffer->n_datas);
+          std::println(
+              stderr, "pipewire: expected {} DMA-BUF planes, got {}", allocation.planes.size(), buffer->n_datas
+          );
           return;
         }
         for (uint32_t index = 0; index < buffer->n_datas; ++index) {
@@ -557,8 +560,8 @@ namespace xdpu {
       const int dataTypes = choice.dmabuf ? (1 << SPA_DATA_DmaBuf) : (1 << SPA_DATA_MemFd);
       const int blocks = choice.dmabuf ? dmabufPlaneCount(choice) : 1;
       if (blocks <= 0) {
-        fprintf(
-            stderr, "pipewire: cannot determine plane count for DMA-BUF format 0x%08x modifier 0x%016llx\n", choice.drm,
+        std::println(
+            stderr, "pipewire: cannot determine plane count for DMA-BUF format 0x{:08x} modifier 0x{:016x}", choice.drm,
             static_cast<unsigned long long>(choice.modifier)
         );
         return false;
@@ -630,7 +633,7 @@ namespace xdpu {
       }
       pw_core* connected = pw_context_connect(context, nullptr, 0);
       if (connected == nullptr) {
-        fprintf(stderr, "pipewire: unable to connect to core: %s\n", std::strerror(errno));
+        std::println(stderr, "pipewire: unable to connect to core: {}", std::strerror(errno));
         return false;
       }
       core = std::make_shared<CoreConnection>(connected);
@@ -670,7 +673,7 @@ namespace xdpu {
           spa_pod_builder_prop(&builder, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY);
           spa_pod_builder_long(&builder, static_cast<int64_t>(*modifier));
         }
-        const spa_pod* pod = static_cast<const spa_pod*>(spa_pod_builder_pop(&builder, &frame));
+        const auto* pod = static_cast<const spa_pod*>(spa_pod_builder_pop(&builder, &frame));
         pods.push_back(pod);
         storage.push_back(std::move(bytes));
       }
@@ -691,7 +694,7 @@ namespace xdpu {
         } else {
           // Say so: a consumer that cannot import dmabuf sees only "no more
           // input formats" on its side, with nothing here naming the cause.
-          fprintf(stderr, "pipewire: shm format 0x%08x has no SPA mapping; not advertised\n", shmFormat);
+          std::println(stderr, "pipewire: shm format 0x{:08x} has no SPA mapping; not advertised", shmFormat);
         }
       }
       return list;
@@ -701,7 +704,7 @@ namespace xdpu {
       (void)oldState;
       auto* stream = static_cast<PipeWireStream*>(data);
       if (state == PW_STREAM_STATE_ERROR) {
-        fprintf(stderr, "pipewire: stream error: %s\n", error == nullptr ? "unknown" : error);
+        std::println(stderr, "pipewire: stream error: {}", error == nullptr ? "unknown" : error);
       }
       // A driver stream must submit its first buffer itself. Triggering the graph
       // here is not sufficient because there is no queued buffer to schedule yet.
@@ -755,7 +758,7 @@ namespace xdpu {
 
       const FormatChoice choice = impl.currentChoice();
       if (!choice.valid) {
-        fprintf(stderr, "pipewire: no supported format for new buffer\n");
+        std::println(stderr, "pipewire: no supported format for new buffer");
         return;
       }
 
@@ -820,14 +823,14 @@ namespace xdpu {
 
     m_impl->pwLoop = pw_loop_new(nullptr);
     if (m_impl->pwLoop == nullptr) {
-      fprintf(stderr, "pipewire: unable to create loop\n");
+      std::println(stderr, "pipewire: unable to create loop");
       return;
     }
 
     pw_loop_enter(m_impl->pwLoop);
     m_impl->context = pw_context_new(m_impl->pwLoop, nullptr, 0);
     if (m_impl->context == nullptr) {
-      fprintf(stderr, "pipewire: unable to create context\n");
+      std::println(stderr, "pipewire: unable to create context");
       return;
     }
 
@@ -877,14 +880,14 @@ namespace xdpu {
     );
     stream->m_impl->stream = pw_stream_new(m_impl->core->core, "umbriel-screen-capture", props);
     if (stream->m_impl->stream == nullptr) {
-      fprintf(stderr, "pipewire: unable to create stream\n");
+      std::println(stderr, "pipewire: unable to create stream");
       return nullptr;
     }
     pw_stream_add_listener(stream->m_impl->stream, &stream->m_impl->streamListener, &kStreamEvents, stream.get());
 
     PodList params = buildFormatParams(*stream->m_impl);
     if (params.pods.empty()) {
-      fprintf(stderr, "pipewire: capture constraints contain no PipeWire-compatible formats\n");
+      std::println(stderr, "pipewire: capture constraints contain no PipeWire-compatible formats");
       return nullptr;
     }
 
@@ -894,7 +897,7 @@ namespace xdpu {
         stream->m_impl->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, params.pods.data(), params.pods.size()
     );
     if (rc < 0) {
-      fprintf(stderr, "pipewire: unable to connect stream: %s\n", spa_strerror(rc));
+      std::println(stderr, "pipewire: unable to connect stream: {}", spa_strerror(rc));
       return nullptr;
     }
 
@@ -1078,7 +1081,7 @@ namespace xdpu {
 
     const int rc = pw_stream_update_params(m_impl->stream, params.pods.data(), params.pods.size());
     if (rc < 0) {
-      std::fprintf(stderr, "pipewire: unable to reconfigure stream: %s\n", spa_strerror(rc));
+      std::println(stderr, "pipewire: unable to reconfigure stream: {}", spa_strerror(rc));
       m_impl->width = previousWidth;
       m_impl->height = previousHeight;
       m_impl->constraints = std::move(previousConstraints);
@@ -1107,7 +1110,7 @@ namespace xdpu {
     }
     const int rc = pw_stream_set_active(m_impl->stream, active);
     if (rc < 0) {
-      std::fprintf(stderr, "pipewire: unable to change stream activity: %s\n", spa_strerror(rc));
+      std::println(stderr, "pipewire: unable to change stream activity: {}", spa_strerror(rc));
       return false;
     }
     return true;

@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <wayland-client.h>
 
 namespace xdpu {
@@ -53,7 +54,7 @@ namespace xdpu {
       const size_t stride = static_cast<size_t>(w) * 3;
       auto* target = static_cast<uint8_t*>(g_malloc(stride * h));
       const bool bgr = format == DRM_FORMAT_XBGR8888 || format == DRM_FORMAT_ABGR8888;
-      auto* pixels = static_cast<const uint32_t*>(capture.mapping);
+      const auto* pixels = static_cast<const uint32_t*>(capture.mapping);
       for (int y = 0; y < h; ++y) {
         auto* row = target + static_cast<size_t>(y) * stride;
         for (int x = 0; x < w; ++x) {
@@ -199,9 +200,9 @@ namespace xdpu {
 
     Impl(std::vector<PreviewSource> sources, ResultsReadyCallback onResultsReady)
         : sources(std::move(sources)), onResultsReady(std::move(onResultsReady)), started(this->sources.size(), false),
-          worker([this](std::stop_token stop) { run(stop); }) {}
+          worker([this](const std::stop_token& stop) { run(stop); }) {}
 
-    void run(std::stop_token stop) {
+    void run(const std::stop_token& stop) {
       std::unique_ptr<Loop> loop;
       std::unique_ptr<WaylandContext> wayland;
       while (!stop.stop_requested()) {
@@ -256,7 +257,7 @@ namespace xdpu {
       : m_impl(std::make_unique<Impl>(std::move(sources), std::move(onResultsReady))) {}
   Previews::~Previews() = default;
 
-  void Previews::request(std::vector<size_t> indices) {
+  void Previews::request(const std::vector<size_t>& indices) {
     std::scoped_lock lock(m_impl->mutex);
     m_impl->pending.clear();
     for (size_t index : indices) {

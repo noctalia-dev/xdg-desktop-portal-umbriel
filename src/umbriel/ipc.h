@@ -39,7 +39,7 @@ namespace xdpu {
     UmbrielIpc(const UmbrielIpc&) = delete;
     UmbrielIpc& operator=(const UmbrielIpc&) = delete;
 
-    [[nodiscard]] bool connected() const;
+    bool connected() const;
     void setScreenCastActive(bool active);
 
   private:

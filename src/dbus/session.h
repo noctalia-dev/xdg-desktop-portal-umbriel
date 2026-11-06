@@ -92,12 +92,12 @@ namespace xdpu {
     uint32_t cursorMode() const;
     uint32_t persistMode() const;
     const std::vector<Selection>& restoreSelections() const;
-    [[nodiscard]] bool restoreDynamic() const;
+    bool restoreDynamic() const;
 
     void setSelections(std::vector<Selection> selections);
     const std::vector<Selection>& selections() const;
 
-    bool addStream(
+    [[nodiscard]] bool addStream(
         Loop& loop, WaylandContext& wayland, std::unique_ptr<WaylandContext::CaptureSession> capture,
         std::unique_ptr<PipeWireStream> stream, const CaptureConstraints& constraints, const Selection& selection,
         CaptureCursorMode cursorMode, uint32_t maxFps, DynamicMode dynamicMode, ClosedHandler backendClosedHandler
@@ -106,8 +106,8 @@ namespace xdpu {
     void setDynamicTarget(const std::optional<Selection>& target);
     void setDynamicMode(DynamicMode mode);
     void setFollowTarget(DynamicMode mode, const std::optional<Selection>& target);
-    [[nodiscard]] bool hasDynamicStreams() const;
-    [[nodiscard]] std::optional<DynamicMode> dynamicMode() const;
+    bool hasDynamicStreams() const;
+    std::optional<DynamicMode> dynamicMode() const;
 
     sdbus::Variant restoreDataVariant(const std::string& token) const;
 

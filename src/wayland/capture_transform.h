@@ -74,7 +74,7 @@ namespace xdpu {
 
   // Normalize a packed 32-bit image into separate, possibly padded storage.
   // Channel order is preserved. Source and destination must not overlap.
-  inline bool transformPacked32(
+  [[nodiscard]] inline bool transformPacked32(
       const void* source, size_t sourceSize, uint32_t width, uint32_t height, uint32_t sourceStride, uint32_t transform,
       void* destination, size_t destinationSize, uint32_t destinationStride
   ) {
