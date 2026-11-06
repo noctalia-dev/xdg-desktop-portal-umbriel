@@ -107,12 +107,18 @@ namespace xdpu {
     }
     const auto* input = static_cast<const uint8_t*>(source);
     auto* output = static_cast<uint8_t*>(destination);
+    if (transform == 0) {
+      // Iterate the source rows directly: sourceRequired bounds exactly these reads.
+      for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(
+            output + static_cast<size_t>(y) * destinationStride, input + static_cast<size_t>(y) * sourceStride,
+            static_cast<size_t>(sourceRow)
+        );
+      }
+      return true;
+    }
     for (uint32_t y = 0; y < displayed.height; ++y) {
       auto* row = output + static_cast<size_t>(y) * destinationStride;
-      if (transform == 0) {
-        std::memcpy(row, input + static_cast<size_t>(y) * sourceStride, static_cast<size_t>(sourceRow));
-        continue;
-      }
       for (uint32_t x = 0; x < displayed.width; ++x) {
         const BufferPoint point = displayToBuffer(
             static_cast<int32_t>(x), static_cast<int32_t>(y), static_cast<int32_t>(width), static_cast<int32_t>(height),
