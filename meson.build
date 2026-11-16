@@ -89,7 +89,7 @@ daemon_sources = files(
   'src/umbriel/ipc.cpp',
 )
 
-executable(
+portal_daemon = executable(
   'xdg-desktop-portal-umbriel',
   daemon_sources + protocol_sources + [defaults_h],
   include_directories: [include_directories('src'), include_directories('.')],
@@ -160,6 +160,14 @@ if get_option('tests')
     link_args: ['-Wl,--wrap=renameat'],
   )
   test('global-shortcuts-portal', find_program('dbus-run-session'), args: ['--', global_shortcuts_portal_test])
+
+  daemon_shutdown_test = executable(
+    'daemon-shutdown-test',
+    files('tests/daemon_shutdown.cpp', 'src/dbus/global_shortcuts_credentials.cpp') + protocol_sources + [global_shortcuts_server_h],
+    include_directories: [include_directories('src'), include_directories('.')],
+    dependencies: [sdbus_dep, wayland_client_dep, dependency('wayland-server'), nlohmann_json_dep],
+  )
+  test('daemon-shutdown', find_program('dbus-run-session'), args: ['--', daemon_shutdown_test, portal_daemon])
 
   executable(
     'screencast-test-client',
