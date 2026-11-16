@@ -4,9 +4,42 @@ An [xdg-desktop-portal](https://github.com/flatpak/xdg-desktop-portal) backend f
 
 ## Supported interfaces
 
+- `org.freedesktop.impl.portal.GlobalShortcuts` (version 1)
 - `org.freedesktop.impl.portal.InputCapture` (version 2)
 - `org.freedesktop.impl.portal.ScreenCast`
 - `org.freedesktop.impl.portal.Screenshot`
+
+## Global shortcuts
+
+The GlobalShortcuts backend implements version 1: keyboard shortcut registration, listing, activation and release signals, and notifications when bindings change. Applications use [org.freedesktop.portal.GlobalShortcuts](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html) through `xdg-desktop-portal`. Bindings are edited in Umbriel's TOML configuration; the version 2 `ConfigureShortcuts` method and an interactive shortcut editor are unsupported.
+
+Requires an Umbriel build providing version 1 of `umbriel_global_shortcuts_manager_v1`. This private bridge version is independent of the D-Bus interface version. On compositor builds without this bridge, GlobalShortcuts requests fail while the other portal interfaces remain available.
+
+Umbriel asks for physical approval before registering new shortcut IDs. Review the application label, shortcut IDs, descriptions, and candidate chords; the application label is unverified. Press Enter on a physical keyboard to advance through review pages, then press Enter again on the final page to approve and remember the request. Another non-modifier physical key or a pointer click cancels. Virtual keyboards and emulated input cannot approve. Each session allows one bind attempt, so retry with a new session after cancellation or failure.
+
+Set overrides in **Umbriel's configuration file**:
+
+```toml
+[global_shortcuts."org.example.App"]
+"push-to-talk" = "Mod+Shift+M"
+"toggle-overlay" = ""
+```
+
+Use the exact application and shortcut IDs from `umbriel global-shortcuts --json`. An empty value disables a shortcut. Overrides take priority over remembered and application-preferred triggers; removing an override restores the remembered preference. New shortcut IDs still require approval. Plain or Shift-only printable preferred triggers are left unassigned; explicit overrides can assign them. Mouse buttons, wheel events, modifier-only chords, and multi-chord sequences are unsupported.
+
+Configured keybinds in the default submap, Ctrl+Alt+Escape, and VT-switch chords remain reserved. Other live shortcut conflicts follow registration order. Disabled, unassigned, and conflicting shortcuts are omitted from bound results. Shortcuts respect the focused application's shortcut inhibition and pause during input capture, locking, confirmation panels, active submaps, and session inactivity. Configuration reloads update affected bindings and stop held activations whose binding changed.
+
+Approval records and preferences belong to Umbriel, in `$XDG_STATE_HOME/umbriel/global-shortcuts.json`. The backend keeps only opaque credentials keyed by application in `$XDG_STATE_HOME/xdg-desktop-portal-umbriel/global-shortcuts-credentials.json`, using an owned 0700 directory and atomic 0600 file updates. Both paths default under `~/.local/state`. Credentials stay out of portal replies, IPC listings, and logs. Missing or revoked credentials require fresh approval; failure to save a replacement fails the request and closes its new registration.
+
+Inspect shortcuts and revoke remembered approval with:
+
+```sh
+umbriel global-shortcuts --json
+umbriel global-shortcuts-revoke org.example.App
+umbriel global-shortcuts-revoke all
+```
+
+Revocation closes matching live sessions and cancels pending review. Later requests require fresh approval. TOML overrides remain in place.
 
 ## Input capture
 
