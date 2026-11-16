@@ -39,6 +39,7 @@ protocols = {
   'linux-dmabuf-v1':              wp_dir / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
   'xdg-output-unstable-v1':       wp_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
   'umbriel-input-capture-v1':     meson.current_source_dir() / 'protocols/umbriel-input-capture-v1.xml',
+  'umbriel-global-shortcuts-v1':  meson.current_source_dir() / 'protocols/umbriel-global-shortcuts-v1.xml',
 }
 
 protocol_sources = []
