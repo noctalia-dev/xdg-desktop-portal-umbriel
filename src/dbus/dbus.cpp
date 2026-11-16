@@ -1,6 +1,7 @@
 #include "dbus/dbus.h"
 
 #include "config/config.h"
+#include "dbus/global_shortcuts.h"
 #include "dbus/input_capture.h"
 #include "dbus/screencast.h"
 #include "dbus/screenshot.h"
@@ -57,6 +58,7 @@ namespace xdpu {
     std::unique_ptr<ScreenshotPortal> screenshot;
     std::unique_ptr<ScreenCastPortal> screencast;
     std::unique_ptr<InputCapturePortal> inputCapture;
+    std::unique_ptr<GlobalShortcutsPortal> globalShortcuts;
     int busFd = -1;
     int busFdWatch = 0;
     int eventFd = -1;
@@ -74,6 +76,7 @@ namespace xdpu {
           std::make_unique<ScreenCastPortal>(loop, *connection, *desktopObject, this->config, wayland, pipewire);
 
       inputCapture = std::make_unique<InputCapturePortal>(loop, *connection, *desktopObject, wayland);
+      globalShortcuts = std::make_unique<GlobalShortcutsPortal>(loop, *connection, *desktopObject, wayland);
 
       refreshPollData();
       drain();
@@ -92,6 +95,7 @@ namespace xdpu {
         loop.removeFd(eventFdWatch);
         eventFdWatch = 0;
       }
+      globalShortcuts.reset();
       inputCapture.reset();
       screencast.reset();
       screenshot.reset();
