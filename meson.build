@@ -77,6 +77,7 @@ daemon_sources = files(
   'src/config/config.cpp',
   'src/dbus/dbus.cpp',
   'src/dbus/input_capture.cpp',
+  'src/dbus/global_shortcuts_credentials.cpp',
   'src/dbus/screenshot.cpp',
   'src/dbus/screencast.cpp',
   'src/dbus/request.cpp',
@@ -133,6 +134,15 @@ if get_option('tests')
     dependencies: [wayland_client_dep, dependency('wayland-server'), libdrm_dep, nlohmann_json_dep],
   )
   test('global-shortcuts-client', global_shortcuts_client_test)
+
+  global_shortcuts_credentials_test = executable(
+    'global-shortcuts-credentials-test',
+    files('tests/global_shortcuts_credentials.cpp', 'src/dbus/global_shortcuts_credentials.cpp'),
+    include_directories: include_directories('src'),
+    dependencies: nlohmann_json_dep,
+    link_args: ['-Wl,--wrap=write', '-Wl,--wrap=fsync', '-Wl,--wrap=renameat'],
+  )
+  test('global-shortcuts-credentials', global_shortcuts_credentials_test)
 
   executable(
     'screencast-test-client',
