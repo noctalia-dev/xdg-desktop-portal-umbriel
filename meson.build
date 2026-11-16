@@ -82,6 +82,7 @@ daemon_sources = files(
   'src/dbus/request.cpp',
   'src/dbus/session.cpp',
   'src/wayland/wayland.cpp',
+  'src/wayland/global_shortcuts.cpp',
   'src/pipewire/pipewire.cpp',
   'src/umbriel/ipc.cpp',
 )
@@ -113,6 +114,25 @@ if get_option('tests')
     include_directories: include_directories('src'),
   )
   test('capture-transform', capture_transform_test)
+
+  global_shortcuts_server_h = custom_target(
+    'global-shortcuts-server-protocol.h',
+    input: protocols['umbriel-global-shortcuts-v1'],
+    output: 'global-shortcuts-server-protocol.h',
+    command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+  )
+  global_shortcuts_client_test = executable(
+    'global-shortcuts-client-test',
+    files(
+      'tests/global_shortcuts_client.cpp',
+      'src/wayland/global_shortcuts.cpp',
+      'src/wayland/wayland.cpp',
+      'src/loop/loop.cpp',
+    ) + protocol_sources + [global_shortcuts_server_h],
+    include_directories: [include_directories('src'), include_directories('.')],
+    dependencies: [wayland_client_dep, dependency('wayland-server'), libdrm_dep, nlohmann_json_dep],
+  )
+  test('global-shortcuts-client', global_shortcuts_client_test)
 
   executable(
     'screencast-test-client',
