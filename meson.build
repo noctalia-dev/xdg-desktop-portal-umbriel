@@ -77,6 +77,7 @@ daemon_sources = files(
   'src/config/config.cpp',
   'src/dbus/dbus.cpp',
   'src/dbus/input_capture.cpp',
+  'src/dbus/global_shortcuts.cpp',
   'src/dbus/global_shortcuts_credentials.cpp',
   'src/dbus/screenshot.cpp',
   'src/dbus/screencast.cpp',
@@ -143,6 +144,22 @@ if get_option('tests')
     link_args: ['-Wl,--wrap=write', '-Wl,--wrap=fsync', '-Wl,--wrap=renameat'],
   )
   test('global-shortcuts-credentials', global_shortcuts_credentials_test)
+
+  global_shortcuts_portal_test = executable(
+    'global-shortcuts-portal-test',
+    files(
+      'tests/global_shortcuts_portal.cpp',
+      'src/dbus/global_shortcuts.cpp',
+      'src/dbus/global_shortcuts_credentials.cpp',
+      'src/wayland/global_shortcuts.cpp',
+      'src/wayland/wayland.cpp',
+      'src/loop/loop.cpp',
+    ) + protocol_sources + [global_shortcuts_server_h],
+    include_directories: [include_directories('src'), include_directories('.')],
+    dependencies: [sdbus_dep, wayland_client_dep, dependency('wayland-server'), libdrm_dep, nlohmann_json_dep],
+    link_args: ['-Wl,--wrap=renameat'],
+  )
+  test('global-shortcuts-portal', find_program('dbus-run-session'), args: ['--', global_shortcuts_portal_test])
 
   executable(
     'screencast-test-client',

@@ -60,7 +60,7 @@ Comments and documentation explain what the code currently does and any non-obvi
 
 ## Tests
 
-Unit tests are Meson tests in `tests/` and run with `just test`. They cover pure logic such as capture transforms and PipeWire buffer parameters.
+Unit tests are Meson tests in `tests/` and run with `just test`. They cover pure logic such as capture transforms and PipeWire buffer parameters. The GlobalShortcuts portal test uses `dbus-run-session` and a private Wayland server, so it needs no running desktop.
 
 Behaviour that needs a running compositor is covered by integration scripts that take an Umbriel build directory and this repository's build directory:
 

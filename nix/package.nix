@@ -17,6 +17,7 @@
   nlohmann_json,
   gtk4,
   libei,
+  dbus,
 }:
 let
   inherit (builtins) head match readFile;
@@ -52,6 +53,7 @@ stdenv.mkDerivation {
   mesonBuildType = "release";
   doCheck = true;
   checkInputs = [ libei ];
+  nativeCheckInputs = [ dbus ];
 
   meta = with lib; {
     description = "xdg-desktop-portal backend for the Umbriel compositor";
