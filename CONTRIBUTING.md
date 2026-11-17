@@ -25,6 +25,10 @@ Static analysis uses [clang-tidy](https://clang.llvm.org/extra/clang-tidy/). Run
 
 Domain-oriented C++23: one domain per directory under `src/` (`dbus/`, `wayland/`, `pipewire/`, `picker/`, ...), headers beside their sources, and `src/` as the include root. Headers use `#pragma once`.
 
+### Code shared with noctalia-shell
+
+`lib/` (noctalia-ui: controls, renderer, Wayland surfaces, core helpers, used by the share picker) is a copy of [noctalia-shell](https://github.com/noctalia-dev/noctalia)'s `lib/`; do not edit it here. Make fixes there first, then refresh the copy with `tools/sync-lib.sh [path/to/noctalia-shell]` (default `../noctalia-shell`). Formatting and lint cover only `src/` and `tests/`.
+
 ### Naming Conventions
 
 |                        | Convention           | Example                        |

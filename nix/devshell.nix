@@ -33,12 +33,20 @@ pkgs.mkShell {
     cairo
     tomlplusplus
     nlohmann_json
-    gtk4
+    libglvnd
+    libxkbcommon
+    freetype
+    fontconfig
+    pango
+    harfbuzz
+    glib
+    stb
     # Builds the EI receiver used by InputCapture integration checks.
     libei
   ];
 
   shellHook = ''
+    export UMBRIEL_PICKER_ASSETS_DIR="$PWD/lib/assets"
     echo " xdg-desktop-portal-umbriel dev-shell | 'just --list' to see available tasks"
   '';
 }

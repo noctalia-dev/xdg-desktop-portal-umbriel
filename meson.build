@@ -11,8 +11,6 @@ project(
   ],
 )
 
-gnome = import('gnome')
-
 # --- dependencies -----------------------------------------------------------
 
 sdbus_dep = dependency('sdbus-c++', version: '>=2.0')
@@ -25,7 +23,13 @@ cairo_dep = dependency('cairo')
 tomlplusplus_dep = dependency('tomlplusplus')
 nlohmann_json_dep = dependency('nlohmann_json')
 
-gtk4_dep = dependency('gtk4', version: '>=4.12', required: get_option('picker'))
+# The share picker uses the noctalia-ui copy in lib/ (refreshed by tools/sync-lib.sh).
+if get_option('picker')
+  # Recent GLib headers use __COUNTER__, a C2y extension clang warns about under lib/'s -Wpedantic. lib/ adds
+  # GLib with -I after project arguments, so mark its include directory as a system directory (-isystem wins).
+  add_project_arguments('-isystem', dependency('glib-2.0').get_variable(pkgconfig: 'includedir') / 'glib-2.0', language: 'cpp')
+  subdir('lib')
+endif
 
 # --- wayland protocol codegen ------------------------------------------------
 
@@ -43,25 +47,34 @@ protocols = {
 }
 
 protocol_sources = []
+# The picker links lib/, which already defines the xdg-output interface code.
+protocol_headers = []
+picker_protocol_code = []
 foreach name, xml : protocols
-  protocol_sources += custom_target(
+  header = custom_target(
     name + '-client-protocol.h',
     input: xml,
     output: name + '-client-protocol.h',
     command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
   )
-  protocol_sources += custom_target(
+  code = custom_target(
     name + '-protocol.c',
     input: xml,
     output: name + '-protocol.c',
     command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
   )
+  protocol_sources += [header, code]
+  protocol_headers += header
+  if name != 'xdg-output-unstable-v1'
+    picker_protocol_code += code
+  endif
 endforeach
 
 # --- build-time config substitution -----------------------------------------
 
 conf_data = configuration_data()
 conf_data.set('libexecdir', get_option('prefix') / get_option('libexecdir'))
+conf_data.set('pickerassetsdir', get_option('prefix') / get_option('datadir') / 'xdg-desktop-portal-umbriel' / 'assets')
 
 defaults_h = configure_file(
   input: 'src/config/defaults.h.in',
@@ -195,7 +208,7 @@ if get_option('tests')
     include_directories: include_directories('src'),
     dependencies: [pipewire_dep, wayland_client_dep, libdrm_dep, gbm_dep],
     # The test includes pipewire.cpp, so GCC treats its anonymous-namespace types as header types.
-    cpp_args: ['-ffunction-sections', '-fdata-sections', '-Wno-subobject-linkage'],
+    cpp_args: ['-ffunction-sections', '-fdata-sections'] + meson.get_compiler('cpp').get_supported_arguments('-Wno-subobject-linkage'),
     link_args: [
       '-Wl,--gc-sections',
       '-Wl,--wrap=gbm_device_get_format_modifier_plane_count',
@@ -210,29 +223,54 @@ if get_option('tests')
     ],
   )
   test('pipewire-buffer-params', buffer_params_test)
+
+  if get_option('picker')
+    picker_theme_test = executable(
+      'picker-theme-test',
+      files('tests/picker_theme.cpp', 'src/picker/theme.cpp'),
+      include_directories: include_directories('src'),
+      dependencies: [noctalia_ui_dep, nlohmann_json_dep],
+    )
+    test('picker-theme', picker_theme_test)
+  endif
 endif
 
 # --- picker ------------------------------------------------------------------
 
-if gtk4_dep.found()
-  picker_resources = gnome.compile_resources(
-    'picker-resources',
-    'src/picker/resources.gresource.xml',
-    source_dir: 'src/picker',
+if get_option('picker')
+  xdg_decoration_xml = wp_dir / 'unstable/xdg-decoration/xdg-decoration-unstable-v1.xml'
+  xdg_decoration_h = custom_target(
+    'xdg-decoration-unstable-v1-client-protocol.h',
+    input: xdg_decoration_xml,
+    output: 'xdg-decoration-unstable-v1-client-protocol.h',
+    command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+  )
+  xdg_decoration_c = custom_target(
+    'xdg-decoration-unstable-v1-protocol.c',
+    input: xdg_decoration_xml,
+    output: 'xdg-decoration-unstable-v1-protocol.c',
+    command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
   )
   executable(
     'umbriel-share-picker',
     files(
       'src/picker/main.cpp',
+      'src/picker/decoration.cpp',
+      'src/picker/main_loop.cpp',
+      'src/picker/picker_window.cpp',
       'src/picker/previews.cpp',
+      'src/picker/request.cpp',
+      'src/picker/theme.cpp',
       'src/wayland/wayland.cpp',
       'src/loop/loop.cpp',
-    ) + picker_resources + protocol_sources,
+    ) + protocol_headers + picker_protocol_code + [xdg_decoration_h, xdg_decoration_c, defaults_h],
     include_directories: [include_directories('src'), include_directories('.')],
-    dependencies: [gtk4_dep, nlohmann_json_dep, wayland_client_dep, libdrm_dep, dependency('threads')],
+    dependencies: [noctalia_ui_dep, nlohmann_json_dep, wayland_client_dep, libdrm_dep, dependency('threads')],
     install: true,
     install_dir: get_option('libexecdir'),
   )
+  # The glyph font and its metadata, which the renderer loads at startup.
+  install_subdir(noctalia_ui_assets_dir / 'fonts', install_dir: get_option('datadir') / 'xdg-desktop-portal-umbriel' / 'assets')
 endif
 
 # --- data files --------------------------------------------------------------

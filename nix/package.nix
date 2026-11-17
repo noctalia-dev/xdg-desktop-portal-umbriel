@@ -15,7 +15,15 @@
   cairo,
   tomlplusplus,
   nlohmann_json,
-  gtk4,
+  libglvnd,
+  libxkbcommon,
+  freetype,
+  fontconfig,
+  pango,
+  harfbuzz,
+  glib,
+  stb,
+  autoAddDriverRunpath,
   libei,
   dbus,
 }:
@@ -34,6 +42,7 @@ stdenv.mkDerivation {
     ninja
     pkg-config
     wayland-scanner
+    autoAddDriverRunpath
   ];
 
   buildInputs = [
@@ -47,7 +56,14 @@ stdenv.mkDerivation {
     cairo
     tomlplusplus
     nlohmann_json
-    gtk4
+    libglvnd
+    libxkbcommon
+    freetype
+    fontconfig
+    pango
+    harfbuzz
+    glib
+    stb
   ];
 
   mesonBuildType = "release";

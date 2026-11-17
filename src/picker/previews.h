@@ -1,8 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
-#include <gdk/gdk.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,10 +14,17 @@ namespace xdpu {
     std::string identifier;
   };
 
+  // Tightly packed RGBA8, `width * 4` bytes per row.
+  struct Thumbnail {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> rgba;
+  };
+
   struct PreviewResult {
     size_t index;
-    // Owned by the caller after takeResults(); null means capture was unavailable.
-    GdkTexture* texture;
+    // nullopt means capture was unavailable.
+    std::optional<Thumbnail> thumbnail;
   };
 
   // One snapshot per requested source, captured sequentially on a private Wayland connection.

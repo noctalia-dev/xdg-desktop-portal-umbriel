@@ -1,2 +1,2 @@
-option('picker', type: 'feature', value: 'auto', description: 'Build the GTK4 share picker')
+option('picker', type: 'boolean', value: true, description: 'Build the noctalia-ui share picker')
 option('tests', type: 'boolean', value: true, description: 'Build regression tests')

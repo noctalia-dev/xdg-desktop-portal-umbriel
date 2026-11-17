@@ -2,3 +2,4 @@
 
 // Build-time defaults injected by meson configure_file.
 #define XDPU_DEFAULT_CHOOSER_CMD "@libexecdir@/umbriel-share-picker"
+#define XDPU_PICKER_ASSETS_DIR "@pickerassetsdir@"

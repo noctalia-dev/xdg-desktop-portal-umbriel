@@ -9,6 +9,7 @@
 #include <deque>
 #include <drm_fourcc.h>
 #include <mutex>
+#include <print>
 #include <sys/mman.h>
 #include <thread>
 #include <unistd.h>
@@ -40,8 +41,7 @@ namespace xdpu {
       }
     };
 
-    GdkTexture*
-    thumbnail(const Capture& capture, uint32_t width, uint32_t height, uint32_t format, uint32_t transform) {
+    Thumbnail thumbnail(const Capture& capture, uint32_t width, uint32_t height, uint32_t format, uint32_t transform) {
       // Downsample directly from SHM so a second full-resolution copy is never needed.
       const double scale = std::min(1.0, 512.0 / std::max(width, height));
       const int sw = std::max(1, static_cast<int>(width * scale));
@@ -51,26 +51,24 @@ namespace xdpu {
       const bool swapAxes = (transform & 1U) != 0;
       const int w = swapAxes ? sh : sw;
       const int h = swapAxes ? sw : sh;
-      const size_t stride = static_cast<size_t>(w) * 3;
-      auto* target = static_cast<uint8_t*>(g_malloc(stride * h));
+      const size_t stride = static_cast<size_t>(w) * 4;
+      Thumbnail result{.width = w, .height = h, .rgba = std::vector<uint8_t>(stride * h)};
       const bool bgr = format == DRM_FORMAT_XBGR8888 || format == DRM_FORMAT_ABGR8888;
       const auto* pixels = static_cast<const uint32_t*>(capture.mapping);
       for (int y = 0; y < h; ++y) {
-        auto* row = target + static_cast<size_t>(y) * stride;
+        auto* row = result.rgba.data() + static_cast<size_t>(y) * stride;
         for (int x = 0; x < w; ++x) {
           const auto [u, v] = displayToBuffer(x, y, sw, sh, transform);
           const uint32_t pixel =
               pixels[(static_cast<size_t>(v) * height / sh) * width + static_cast<size_t>(u) * width / sw];
-          auto* rgb = row + static_cast<size_t>(x) * 3;
-          rgb[0] = (pixel >> (bgr ? 0 : 16)) & 0xff;
-          rgb[1] = (pixel >> 8) & 0xff;
-          rgb[2] = (pixel >> (bgr ? 16 : 0)) & 0xff;
+          auto* rgba = row + static_cast<size_t>(x) * 4;
+          rgba[0] = (pixel >> (bgr ? 0 : 16)) & 0xff;
+          rgba[1] = (pixel >> 8) & 0xff;
+          rgba[2] = (pixel >> (bgr ? 16 : 0)) & 0xff;
+          rgba[3] = 0xff;
         }
       }
-      GBytes* bytes = g_bytes_new_take(target, stride * h);
-      GdkTexture* texture = gdk_memory_texture_new(w, h, GDK_MEMORY_R8G8B8, bytes, stride);
-      g_bytes_unref(bytes);
-      return texture;
+      return result;
     }
 
     bool finishCaptureCleanup(Loop& loop, WaylandContext& wayland) {
@@ -105,9 +103,10 @@ namespace xdpu {
       return sync.done;
     }
 
-    GdkTexture* captureSource(Loop& loop, WaylandContext& wayland, const PreviewSource& source, std::stop_token stop) {
+    std::optional<Thumbnail>
+    captureSource(Loop& loop, WaylandContext& wayland, const PreviewSource& source, std::stop_token stop) {
       Capture capture;
-      GdkTexture* result = nullptr;
+      std::optional<Thumbnail> result;
       bool done = false;
       auto finish = [&] {
         done = true;
@@ -163,7 +162,7 @@ namespace xdpu {
           ? wayland.createOutputCapture(source.identifier, CaptureCursorMode::Hidden, constraints)
           : wayland.createToplevelCapture(source.identifier, CaptureCursorMode::Hidden, constraints);
       if (!capture.session) {
-        return nullptr;
+        return std::nullopt;
       }
       capture.session->stoppedCb = finish;
       // Check cancellation frequently, and bound sources that never produce a frame.
@@ -216,7 +215,7 @@ namespace xdpu {
           pending.pop_front();
           started[index] = true;
         }
-        GdkTexture* texture = nullptr;
+        std::optional<Thumbnail> thumbnail;
         try {
           // Even the Wayland connection is deferred until a card is visible.
           if (!wayland) {
@@ -224,7 +223,7 @@ namespace xdpu {
             wayland = std::make_unique<WaylandContext>(*loop);
           }
           if (!stop.stop_requested() && wayland->connected()) {
-            texture = captureSource(*loop, *wayland, sources[index], stop);
+            thumbnail = captureSource(*loop, *wayland, sources[index], stop);
             // All Capture members have now been destroyed. Flush and drain
             // their destruction before publishing the thumbnail or idling.
             if (!wayland->connected() || !finishCaptureCleanup(*loop, *wayland)) {
@@ -232,11 +231,11 @@ namespace xdpu {
             }
           }
         } catch (const std::exception& error) {
-          g_warning("umbriel-share-picker: preview unavailable: %s", error.what());
+          std::println(stderr, "umbriel-share-picker: preview unavailable: {}", error.what());
         }
         {
           std::scoped_lock lock(mutex);
-          results.push_back({index, texture});
+          results.push_back({index, std::move(thumbnail)});
         }
         if (onResultsReady) {
           onResultsReady();
@@ -247,9 +246,6 @@ namespace xdpu {
     ~Impl() {
       worker.request_stop();
       worker.join();
-      for (auto& result : results) {
-        g_clear_object(&result.texture);
-      }
     }
   };
 
