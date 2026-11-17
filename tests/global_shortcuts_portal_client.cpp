@@ -54,6 +54,65 @@ namespace {
     return result;
   }
 
+  void probeOwnership(const sdbus::ObjectPath& session, const std::string& request, bool replacement) {
+    constexpr auto kBackend = "org.freedesktop.impl.portal.desktop.umbriel";
+    constexpr auto kBackendInterface = "org.freedesktop.impl.portal.GlobalShortcuts";
+    auto bus = sdbus::createSessionBusConnection();
+    if (replacement) {
+      bus->requestName(sdbus::ServiceName{kService});
+    }
+    auto desktop =
+        sdbus::createProxy(*bus, sdbus::ServiceName{kBackend}, sdbus::ObjectPath{"/org/freedesktop/portal/desktop"});
+    const auto rejected = [replacement](const char* method, const char* expected, const auto& invoke) {
+      bool denied = false;
+      try {
+        invoke();
+      } catch (const sdbus::Error& error) {
+        if (error.getName() != expected) {
+          throw;
+        }
+        denied = true;
+      }
+      require(denied, "ownership probe unexpectedly succeeded");
+      emit({{"event", "rejected"}, {"method", method}, {"replacement", replacement}});
+    };
+    const sdbus::ObjectPath handle{
+        "/org/freedesktop/portal/desktop/request/ownership_probe/r" + std::to_string(getpid())
+    };
+    rejected(
+        "ListShortcuts",
+        replacement ? "org.freedesktop.portal.Error.Failed" : "org.freedesktop.portal.Error.NotAllowed", [&] {
+          uint32_t status = 0;
+          Dict results;
+          desktop->callMethod("ListShortcuts")
+              .onInterface(kBackendInterface)
+              .withArguments(handle, session)
+              .storeResultsTo(status, results);
+        }
+    );
+    if (replacement) {
+      return;
+    }
+    rejected("BindShortcuts", "org.freedesktop.portal.Error.NotAllowed", [&] {
+      uint32_t status = 0;
+      Dict results;
+      desktop->callMethod("BindShortcuts")
+          .onInterface(kBackendInterface)
+          .withArguments(handle, session, Shortcuts{}, std::string{}, Dict{})
+          .storeResultsTo(status, results);
+    });
+    auto sessionProxy = sdbus::createProxy(*bus, sdbus::ServiceName{kBackend}, session);
+    rejected("Session.Close", "org.freedesktop.portal.Error.NotAllowed", [&] {
+      sessionProxy->callMethod("Close").onInterface("org.freedesktop.impl.portal.Session");
+    });
+    if (!request.empty()) {
+      auto requestProxy = sdbus::createProxy(*bus, sdbus::ServiceName{kBackend}, sdbus::ObjectPath{request});
+      rejected("Request.Close", "org.freedesktop.portal.Error.NotAllowed", [&] {
+        requestProxy->callMethod("Close").onInterface("org.freedesktop.impl.portal.Request");
+      });
+    }
+  }
+
   class Client {
   public:
     explicit Client(const std::string& application) {
@@ -224,6 +283,7 @@ namespace {
           {{"event", "requested"},
            {"method", method},
            {"request", pending->id},
+           {"request_handle", std::string(expected)},
            {"tag", pending->tag},
            {"session", session->name}}
       );
@@ -393,6 +453,8 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
     std::println("usage: global-shortcuts-test-client [APPLICATION_ID]");
+    std::println("       global-shortcuts-test-client --probe-session SESSION_HANDLE [REQUEST_HANDLE]");
+    std::println("       global-shortcuts-test-client --probe-replacement SESSION_HANDLE");
     std::println("Use a private portal frontend with a matching desktop entry. One JSON command per line:");
     std::println("{}", R"({"op":"create","session":"main","tag":"create"})");
     std::println(
@@ -407,6 +469,16 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
   try {
+    if (argc >= 2 && std::string_view(argv[1]) == "--probe-session") {
+      require(argc == 3 || argc == 4, "expected a session handle and optional pending request handle");
+      probeOwnership(sdbus::ObjectPath{argv[2]}, argc == 4 ? argv[3] : "", false);
+      return EXIT_SUCCESS;
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "--probe-replacement") {
+      require(argc == 3, "expected an old session handle");
+      probeOwnership(sdbus::ObjectPath{argv[2]}, "", true);
+      return EXIT_SUCCESS;
+    }
     require(argc <= 2, "expected at most one application ID");
     Client client(argc == 2 ? argv[1] : "org.umbriel.GlobalShortcutsTest");
     client.run();
