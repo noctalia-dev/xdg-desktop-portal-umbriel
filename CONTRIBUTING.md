@@ -73,7 +73,7 @@ tests/screencast_transform.sh ../umbriel/build-debug build-debug
 tests/screencast_pipewire_restart.sh ../umbriel/build-debug build-debug
 ```
 
-Each starts an isolated headless Umbriel, a private D-Bus session and PipeWire daemon, and the portal, with a scripted chooser in place of the share picker. The InputCapture checks live in the Umbriel repository; see [InputCapture verification](README.md#inputcapture-verification).
+Each starts an isolated headless Umbriel, a private D-Bus session and PipeWire daemon, and the portal, with a scripted chooser in place of the share picker. The InputCapture and GlobalShortcuts checks live in the Umbriel repository; see [InputCapture verification](README.md#inputcapture-verification) and [GlobalShortcuts verification](README.md#globalshortcuts-verification).
 
 ## Share chooser protocol
 

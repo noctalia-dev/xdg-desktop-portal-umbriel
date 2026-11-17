@@ -162,6 +162,23 @@ Configure any of these Umbriel actions as keybinds or event actions:
 
 Selecting another target replaces only the Wayland capture source. The PipeWire node remains the same, so applications keep the original share without opening another chooser. Window and output targets are interchangeable on that stream. Applications can restore the selected source without reopening the chooser; restore data records whether the share was changeable, and restore data written before this choice existed restores a fixed share. A new session from the same application started within two seconds of a changeable share being granted or retargeted reuses its mode and target, including when that short-lived request closes during handoff. The grant is invalidated when the target changes or clears. Any other request, including a second concurrent share from the same application, opens the picker.
 
+## GlobalShortcuts verification
+
+The integration checks live in the Umbriel repository. They use private D-Bus, config, data, and state directories, an isolated headless compositor, and backend-boundary input devices. They require `jq`, `dbus-daemon`, `dbus-send`, and an `xdg-desktop-portal` executable with `xdg-permission-store` beside it. The frontend used for verification was version 1.22.1.
+
+With both debug builds configured with tests enabled and Umbriel's harness clients available, run from this repository:
+
+```sh
+meson compile -C ../umbriel/build-debug umbriel harness-clients
+meson compile -C build-debug
+bash ../umbriel/tests/global_shortcuts.sh ../umbriel/build-debug
+bash ../umbriel/tests/global_shortcuts_portal.sh ../umbriel/build-debug build-debug /path/to/xdg-desktop-portal
+```
+
+The first check covers the private bridge's approval flow, including pagination, cancellation, virtual input rejection, and capture handoff. The second uses the real portal frontend and backend: version 1 properties, session creation, binding and listing, activation pairs, change snapshots, concurrent ownership and promotion, cancellation, peer and frontend failure, credential rotation across service and compositor restarts, failed cache writes, revocation, and fresh approval after a stale credential is rejected. A successful bind may return an empty list when another session owns the requested chord.
+
+Both checks leave the host compositor and session services unchanged. Failed runs retain their private runtime directories and print the log path; set `UMBRIEL_SHORTCUTS_KEEP_LOGS=1` to retain successful runs too. For an additional visual check in a nested desktop, focus its window in the parent compositor before approving or exercising shortcuts.
+
 ## InputCapture verification
 
 The receiver helper is built when Meson's `tests` option is enabled. The complete integration check lives in the Umbriel repository and uses a private D-Bus session, an isolated headless compositor, and backend-boundary input devices. It requires `dbus-daemon` and `dbus-send` from the `dbus` package, plus an `xdg-desktop-portal` frontend executable; the frontend path is supplied explicitly. The frontend used for verification was version 1.22.1. Persistence checks also start `xdg-permission-store` from that existing frontend package, with a private data directory.
