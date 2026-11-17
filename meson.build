@@ -175,6 +175,12 @@ if get_option('tests')
     dependencies: [sdbus_dep, pipewire_dep],
   )
 
+  executable(
+    'global-shortcuts-test-client',
+    'tests/global_shortcuts_portal_client.cpp',
+    dependencies: [sdbus_dep, nlohmann_json_dep],
+  )
+
   libei_test_dep = dependency('libei-1.0', version: '>=1.3')
   executable(
     'input-capture-test-client',

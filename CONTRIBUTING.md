@@ -62,6 +62,8 @@ Comments and documentation explain what the code currently does and any non-obvi
 
 Unit tests are Meson tests in `tests/` and run with `just test`. They cover pure logic such as capture transforms and PipeWire buffer parameters. The GlobalShortcuts portal test uses `dbus-run-session` and a private Wayland server, so it needs no running desktop.
 
+`global-shortcuts-test-client [APPLICATION_ID]` drives the public frontend. It registers the host test application through `org.freedesktop.host.portal.Registry`, so give it a matching desktop entry in the private data directory. Run `global-shortcuts-test-client --help` for JSON commands. Each stdout line is one JSON event; request IDs, session labels, and optional `tag` values identify asynchronous replies. Wait for a successful create response before using a session. Closing a request emits `cancelled`; the public API may suppress its response signal. EOF and `quit` disconnect the peer without explicitly closing sessions, allowing the runner to check frontend cleanup.
+
 Behaviour that needs a running compositor is covered by integration scripts that take an Umbriel build directory and this repository's build directory:
 
 ```sh
