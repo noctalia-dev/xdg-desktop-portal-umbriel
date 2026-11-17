@@ -159,7 +159,8 @@ if get_option('tests')
     dependencies: [sdbus_dep, wayland_client_dep, dependency('wayland-server'), libdrm_dep, nlohmann_json_dep],
     link_args: ['-Wl,--wrap=renameat'],
   )
-  test('global-shortcuts-portal', find_program('dbus-run-session'), args: ['--', global_shortcuts_portal_test])
+  dbus_session_config = meson.project_source_root() / 'tests/dbus-session.conf'
+  test('global-shortcuts-portal', find_program('dbus-run-session'), args: ['--config-file=' + dbus_session_config, '--', global_shortcuts_portal_test])
 
   daemon_shutdown_test = executable(
     'daemon-shutdown-test',
@@ -167,7 +168,7 @@ if get_option('tests')
     include_directories: [include_directories('src'), include_directories('.')],
     dependencies: [sdbus_dep, wayland_client_dep, dependency('wayland-server'), nlohmann_json_dep],
   )
-  test('daemon-shutdown', find_program('dbus-run-session'), args: ['--', daemon_shutdown_test, portal_daemon])
+  test('daemon-shutdown', find_program('dbus-run-session'), args: ['--config-file=' + dbus_session_config, '--', daemon_shutdown_test, portal_daemon])
 
   executable(
     'screencast-test-client',
