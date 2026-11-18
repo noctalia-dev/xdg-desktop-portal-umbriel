@@ -1,6 +1,7 @@
 {
   lib,
   stdenv,
+  fetchFromGitHub,
   meson,
   ninja,
   pkg-config,
@@ -28,6 +29,15 @@
   dbus,
 }:
 let
+  stb' = stb.overrideAttrs (_: {
+    version = "unstable-2025-10-26";
+    src = fetchFromGitHub {
+      owner = "nothings";
+      repo = "stb";
+      rev = "f1c79c02822848a9bed4315b12c8c8f3761e1296";
+      hash = "sha256-BlyXJtAI7WqXCTT3ylww8zoG0hBxaojJnQDvdQOXJPE=";
+    };
+  });
   inherit (builtins) head match readFile;
   version = head (match ".*\n  version: '([0-9][^']+)'.*" (readFile ../meson.build));
 in
@@ -63,7 +73,7 @@ stdenv.mkDerivation {
     pango
     harfbuzz
     glib
-    stb
+    stb'
   ];
 
   mesonBuildType = "release";

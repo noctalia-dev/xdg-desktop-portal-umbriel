@@ -40,7 +40,6 @@ pkgs.mkShell {
     pango
     harfbuzz
     glib
-    stb
     # Builds the EI receiver used by InputCapture integration checks.
     libei
   ];
