@@ -180,8 +180,7 @@ namespace {
       close(signal[0]);
       auto result = cache.acquire("app");
       const char ready = result.status == Status::Ready ? '1' : '0';
-      (void)write(signal[1], &ready, 1);
-      _exit(ready == '1' ? 0 : 1);
+      _exit(write(signal[1], &ready, 1) == 1 && ready == '1' ? 0 : 1);
     }
     close(signal[1]);
     char ready = 0;
