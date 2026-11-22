@@ -18,6 +18,7 @@ namespace xdpu {
   namespace {
 
     constexpr char kRequestInterface[] = "org.freedesktop.impl.portal.Request";
+    constexpr size_t kMaxOutput = size_t{1} << 20;
 
     void closeFd(int& fd) {
       if (fd < 0) {
@@ -56,13 +57,16 @@ namespace xdpu {
     }
   };
 
-  Request::Request(sdbus::IConnection& connection, std::string path, CloseHandler closeHandler)
+  Request::Request(sdbus::IConnection& connection, const Frontend& frontend, std::string path, CloseHandler closeHandler)
       : m_impl(std::make_unique<Impl>()) {
     m_impl->path = std::move(path);
     m_impl->closeHandler = std::move(closeHandler);
     m_impl->object = sdbus::createObject(connection, sdbus::ObjectPath{m_impl->path});
     m_impl->object->addVTable(
-                      sdbus::registerMethod("Close").implementedAs([this] { m_impl->close(); })
+                      sdbus::registerMethod("Close").implementedAs([this, &frontend] {
+                        frontend.require("portal requests");
+                        m_impl->close();
+                      })
     ).forInterface(kRequestInterface);
   }
 
@@ -94,6 +98,8 @@ namespace xdpu {
     int waitTimer = 0;
     size_t inputOffset = 0;
     bool finished = false;
+    bool overflowed = false;
+    int killPolls = -1; // >= 0 once terminate() sent SIGTERM; SIGKILL after ~1s of polling
 
     Impl(Loop& loop, std::string command, std::string input, Callback callback)
         : loop(loop), command(std::move(command)), input(std::move(input)), callback(std::move(callback)) {}
@@ -125,10 +131,8 @@ namespace xdpu {
       if (pid == 0) {
         ::dup2(stdinPipe[0], STDIN_FILENO);
         ::dup2(stdoutPipe[1], STDOUT_FILENO);
-        closeFd(stdinPipe[0]);
-        closeFd(stdinPipe[1]);
-        closeFd(stdoutPipe[0]);
-        closeFd(stdoutPipe[1]);
+        // Do not leak the portal's D-Bus, Wayland, or PipeWire fds into the chooser.
+        ::close_range(3, ~0U, 0);
         ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
         _exit(127);
       }
@@ -233,6 +237,14 @@ namespace xdpu {
         const ssize_t size = ::read(stdoutFd, buffer, sizeof(buffer));
         if (size > 0) {
           output.append(buffer, buffer + size);
+          if (output.size() > kMaxOutput) {
+            std::println(stderr, "dbus: output of '{}' exceeds {} bytes; killing it", command, kMaxOutput);
+            overflowed = true;
+            ::kill(pid, SIGKILL);
+            closeStdout();
+            scheduleWait(self, 0);
+            return;
+          }
           continue;
         }
         if (size == 0) {
@@ -277,6 +289,9 @@ namespace xdpu {
       int status = 0;
       const pid_t waited = ::waitpid(pid, &status, WNOHANG);
       if (waited == 0) {
+        if (killPolls >= 0 && ++killPolls == 40) {
+          ::kill(pid, SIGKILL);
+        }
         scheduleWait(self, 25);
         return;
       }
@@ -287,7 +302,7 @@ namespace xdpu {
 
       ProcessResult result;
       result.output = std::move(output);
-      if (waited == pid) {
+      if (waited == pid && !overflowed) {
         if (WIFEXITED(status)) {
           result.exited = true;
           result.exitStatus = WEXITSTATUS(status);
@@ -306,6 +321,7 @@ namespace xdpu {
       closeStdout();
       if (pid > 0) {
         ::kill(pid, SIGTERM);
+        killPolls = 0;
         scheduleWait(self, 25);
       }
     }
@@ -341,7 +357,14 @@ namespace xdpu {
       if (pid > 0) {
         ::kill(pid, SIGTERM);
         int status = 0;
-        (void)::waitpid(pid, &status, WNOHANG);
+        pid_t waited = 0;
+        while ((waited = ::waitpid(pid, &status, WNOHANG)) < 0 && errno == EINTR) {
+        }
+        if (waited == 0) {
+          ::kill(pid, SIGKILL);
+          while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+          }
+        }
         pid = -1;
       }
     }

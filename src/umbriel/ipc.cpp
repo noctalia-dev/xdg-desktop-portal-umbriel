@@ -133,6 +133,7 @@ namespace xdpu {
       closeFd(fd);
       fd = -1;
       output.clear();
+      input.clear();
       writeOffset = 0;
     }
 
@@ -214,7 +215,15 @@ namespace xdpu {
         }
         const std::string line = input.substr(0, newline);
         input.erase(0, newline + 1);
-        handleLine(line);
+        try {
+          handleLine(line);
+        } catch (const nlohmann::json::exception& error) {
+          std::println(stderr, "umbriel-ipc: ignoring malformed event: {}", error.what());
+        }
+      }
+      if (input.size() > 1024 * 1024) {
+        std::println(stderr, "umbriel-ipc: event exceeds 1 MiB without newline; disconnecting");
+        disconnect();
       }
     }
 

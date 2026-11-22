@@ -400,12 +400,18 @@ namespace xdpu {
     std::vector<Selection> currentSelections;
     std::vector<std::shared_ptr<StreamState>> streams;
 
-    Impl(sdbus::IConnection& connection, std::string path, std::string appId, ClosedHandler closedHandler)
+    Impl(
+        sdbus::IConnection& connection, const Frontend& frontend, std::string path, std::string appId,
+        ClosedHandler closedHandler
+    )
         : path(std::move(path)), appId(std::move(appId)), closedHandler(std::move(closedHandler)) {
       object = sdbus::createObject(connection, sdbus::ObjectPath{this->path});
       object
           ->addVTable(
-              sdbus::registerMethod("Close").implementedAs([this] { close(false); }),
+              sdbus::registerMethod("Close").implementedAs([this, &frontend] {
+                frontend.require("screen cast sessions");
+                close(false);
+              }),
               sdbus::registerSignal("Closed").withParameters(),
               sdbus::registerProperty("version").withGetter([] { return uint32_t{1}; })
           )
@@ -443,8 +449,13 @@ namespace xdpu {
     }
   };
 
-  Session::Session(sdbus::IConnection& connection, std::string path, std::string appId, ClosedHandler closedHandler)
-      : m_impl(std::make_unique<Impl>(connection, std::move(path), std::move(appId), std::move(closedHandler))) {}
+  Session::Session(
+      sdbus::IConnection& connection, const Frontend& frontend, std::string path, std::string appId,
+      ClosedHandler closedHandler
+  )
+      : m_impl(std::make_unique<Impl>(
+            connection, frontend, std::move(path), std::move(appId), std::move(closedHandler)
+        )) {}
 
   Session::~Session() = default;
 

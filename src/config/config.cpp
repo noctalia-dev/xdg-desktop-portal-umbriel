@@ -75,7 +75,7 @@ namespace xdpu {
 
   } // namespace
 
-  Config loadConfig() {
+  Config loadConfig(const Config& onParseError) {
     Config config;
     const auto path = configPath();
 
@@ -96,6 +96,7 @@ namespace xdpu {
     } catch (const toml::parse_error& error) {
       const std::string description(error.description());
       std::println(stderr, "config: unable to parse {}: {}", path.c_str(), description);
+      return onParseError;
     }
 
     return config;
@@ -243,7 +244,7 @@ namespace xdpu {
     }
 
     void reload() {
-      const Config next = loadConfig();
+      const Config next = loadConfig(current);
       if (next == current) {
         return;
       }

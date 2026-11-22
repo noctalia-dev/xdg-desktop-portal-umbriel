@@ -1,5 +1,6 @@
 #include "dbus/input_capture.h"
 
+#include "dbus/frontend.h"
 #include "dbus/request.h"
 #include "loop/loop.h"
 #include "wayland/wayland.h"
@@ -29,7 +30,6 @@ namespace xdpu {
   namespace {
     constexpr char kInterface[] = "org.freedesktop.impl.portal.InputCapture";
     constexpr char kSessionInterface[] = "org.freedesktop.impl.portal.Session";
-    constexpr char kFrontend[] = "org.freedesktop.portal.Desktop";
     constexpr uint32_t kCapabilities = 3;
     constexpr char kRestoreVendor[] = "umbriel-input-capture";
     constexpr uint32_t kRestoreVersion = 1;
@@ -210,15 +210,19 @@ namespace xdpu {
         if (operation->timer != 0) {
           portal.loop.removeTimer(operation->timer);
         }
-        if (operation->response) {
-          operation->response->returnResults(status, results);
-        } else if (operation->fdResponse) {
-          if (status == 0 && operation->fd.get() >= 0) {
-            connected = true;
-            operation->fdResponse->returnResults(operation->fd);
-          } else {
-            operation->fdResponse->returnError(failure("Unable to connect the input capture EIS transport"));
+        try {
+          if (operation->response) {
+            operation->response->returnResults(status, results);
+          } else if (operation->fdResponse) {
+            if (status == 0 && operation->fd.get() >= 0) {
+              connected = true;
+              operation->fdResponse->returnResults(operation->fd);
+            } else {
+              operation->fdResponse->returnError(failure("Unable to connect the input capture EIS transport"));
+            }
           }
+        } catch (const sdbus::Error&) {
+          // A disconnected caller still needs its request retired.
         }
         // The request Close callback may currently be executing. Keep its
         // D-Bus object alive until dispatch returns.
@@ -240,7 +244,10 @@ namespace xdpu {
           finish(operations.begin()->first, 2);
         }
         if (backend && object) {
-          object->emitSignal("Closed").onInterface(kSessionInterface).withArguments();
+          try {
+            object->emitSignal("Closed").onInterface(kSessionInterface).withArguments();
+          } catch (const sdbus::Error&) {
+          }
         }
         const std::string sessionPath = path;
         portal.defer([owner = &portal, sessionPath] { owner->sessions.erase(sessionPath); });
@@ -248,7 +255,10 @@ namespace xdpu {
 
       void signal(const char* name, const PortalResults& options) {
         if (!closed) {
-          portal.object.emitSignal(name).onInterface(kInterface).withArguments(sdbus::ObjectPath{path}, options);
+          try {
+            portal.object.emitSignal(name).onInterface(kInterface).withArguments(sdbus::ObjectPath{path}, options);
+          } catch (const sdbus::Error&) {
+          }
         }
       }
 
@@ -407,8 +417,7 @@ namespace xdpu {
     sdbus::IConnection& connection;
     sdbus::IObject& object;
     WaylandContext& wayland;
-    std::unique_ptr<sdbus::IProxy> bus;
-    std::string frontendOwner;
+    Frontend frontend;
     wl_registry* registry = nullptr;
     umbriel_input_capture_manager_v1* manager = nullptr;
     uint32_t managerName = 0;
@@ -417,33 +426,19 @@ namespace xdpu {
     std::set<std::string> transientScopes;
 
     Impl(Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, WaylandContext& wayland)
-        : loop(loop), connection(connection), object(object), wayland(wayland) {
-      registry = wl_display_get_registry(wayland.display());
-      static constexpr wl_registry_listener listener{.global = onGlobal, .global_remove = onGlobalRemove};
-      wl_registry_add_listener(registry, &listener, this);
-      wayland.roundtrip();
-      bus = sdbus::createProxy(
-          connection, sdbus::ServiceName{"org.freedesktop.DBus"}, sdbus::ObjectPath{"/org/freedesktop/DBus"}
-      );
-      bus->uponSignal("NameOwnerChanged")
-          .onInterface("org.freedesktop.DBus")
-          .call([this](const std::string& name, const std::string&, const std::string& owner) {
-            if (name == kFrontend && owner != frontendOwner) {
-              frontendOwner = owner;
+        : loop(loop), connection(connection), object(object), wayland(wayland),
+          frontend(connection, [this](const std::string& name, const std::string& owner, bool changed) {
+            if (changed) {
               closeAll();
               expireScopes();
             } else if (owner.empty()) {
               expireScope(name);
             }
-          });
-      try {
-        bus->callMethod("GetNameOwner")
-            .onInterface("org.freedesktop.DBus")
-            .withArguments(std::string{kFrontend})
-            .storeResultsTo(frontendOwner);
-      } catch (const sdbus::Error&) {
-        frontendOwner.clear();
-      }
+          }) {
+      registry = wl_display_get_registry(wayland.display());
+      static constexpr wl_registry_listener listener{.global = onGlobal, .global_remove = onGlobalRemove};
+      wl_registry_add_listener(registry, &listener, this);
+      wayland.roundtrip();
       registerInterface();
     }
 
@@ -475,20 +470,9 @@ namespace xdpu {
       }
     }
 
-    std::string caller() const {
-      const auto message = connection.getCurrentlyProcessedMessage();
-      const char* sender = message.getSender();
-      return sender != nullptr ? sender : "";
-    }
+    std::string caller() const { return frontend.caller(); }
 
-    void requireFrontend() const {
-      if (frontendOwner.empty() || caller() != frontendOwner) {
-        throw sdbus::Error{
-            sdbus::Error::Name{"org.freedesktop.portal.Error.NotAllowed"},
-            "Only the desktop portal frontend may control input capture"
-        };
-      }
-    }
+    void requireFrontend() const { frontend.require("input capture"); }
 
     std::shared_ptr<Session>
     lookup(const sdbus::ObjectPath& path, const std::string& appId, bool requireStarted = true) {

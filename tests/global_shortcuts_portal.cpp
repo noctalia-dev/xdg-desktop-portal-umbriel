@@ -1,5 +1,7 @@
 #include "dbus/global_shortcuts.h"
+#include "config/config.h"
 #include "dbus/request.h"
+#include "dbus/screenshot.h"
 #include "global_shortcuts_fixture.h"
 
 #include <chrono>
@@ -516,6 +518,22 @@ namespace {
       fixture.until([&] { return fixture.closed.size() == 2; });
     }
   }
+
+  void screenshotRequiresFrontend() {
+    BusFixture fixture;
+    xdpu::ScreenshotPortal screenshot(
+        *fixture.transport.loop, *fixture.backend, *fixture.desktop, xdpu::Config{}, *fixture.transport.wayland
+    );
+    auto reply = std::make_shared<Reply>();
+    fixture.otherProxy->callMethodAsync("Screenshot")
+        .onInterface("org.freedesktop.impl.portal.Screenshot")
+        .withArguments(sdbus::ObjectPath{fixture.handle()}, std::string{"org.test.App"}, std::string{}, Dict{})
+        .uponReplyInvoke([reply](std::optional<sdbus::Error> error, uint32_t, Dict) {
+          reply->error = error ? std::string(error->getName()) : std::string{};
+          reply->done = true;
+        });
+    fixture.expectError(reply, "org.freedesktop.portal.Error.NotAllowed");
+  }
 } // namespace
 
 extern "C" {
@@ -537,6 +555,7 @@ int main() {
     ownershipAndCancellation();
     persistenceFailureAndDelayedSignals();
     validationMissingBridgeAndDeadlines();
+    screenshotRequiresFrontend();
     std::println("global shortcuts portal methods, ownership, persistence, cancellation, and deadlines passed");
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

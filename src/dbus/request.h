@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dbus/frontend.h"
+
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -19,7 +21,7 @@ namespace xdpu {
   public:
     using CloseHandler = std::function<void()>;
 
-    Request(sdbus::IConnection& connection, std::string path, CloseHandler closeHandler);
+    Request(sdbus::IConnection& connection, const Frontend& frontend, std::string path, CloseHandler closeHandler);
     ~Request();
 
     Request(const Request&) = delete;

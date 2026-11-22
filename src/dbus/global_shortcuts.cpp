@@ -1,5 +1,6 @@
 #include "dbus/global_shortcuts.h"
 
+#include "dbus/frontend.h"
 #include "dbus/request.h"
 #include "loop/loop.h"
 
@@ -20,7 +21,6 @@ namespace xdpu {
     constexpr auto kInterface = "org.freedesktop.impl.portal.GlobalShortcuts";
     constexpr auto kSessionInterface = "org.freedesktop.impl.portal.Session";
     constexpr auto kRequestInterface = "org.freedesktop.impl.portal.Request";
-    constexpr auto kFrontend = "org.freedesktop.portal.Desktop";
     constexpr std::string_view kSessionPrefix = "/org/freedesktop/portal/desktop/session/";
     constexpr std::string_view kRequestPrefix = "/org/freedesktop/portal/desktop/request/";
     constexpr size_t kSessionLimit = 64;
@@ -453,9 +453,8 @@ namespace xdpu {
     GlobalShortcutCredentials credentials;
     GlobalShortcutsClient client;
     GlobalShortcutTimeouts timeouts;
-    std::unique_ptr<sdbus::IProxy> bus;
+    Frontend frontend;
     sdbus::Slot registration;
-    std::string frontendOwner;
     std::map<std::string, std::shared_ptr<Session>> sessions;
     std::set<std::string> handles;
     std::vector<std::function<void()>> deferred;
@@ -466,31 +465,17 @@ namespace xdpu {
         GlobalShortcutCredentials credentials, GlobalShortcutTimeouts timeouts
     )
         : loop(loop), connection(connection), object(object), credentials(std::move(credentials)),
-          client(loop, wayland, timeouts), timeouts(timeouts) {
-      bus = sdbus::createProxy(
-          connection, sdbus::ServiceName{"org.freedesktop.DBus"}, sdbus::ObjectPath{"/org/freedesktop/DBus"}
-      );
-      bus->uponSignal("NameOwnerChanged")
-          .onInterface("org.freedesktop.DBus")
-          .call([this](const std::string& name, const std::string&, const std::string& owner) {
-            if (name == kFrontend && owner != frontendOwner) {
-              frontendOwner = owner;
+          client(loop, wayland, timeouts), timeouts(timeouts),
+          frontend(connection, [this](const std::string&, const std::string&, bool changed) {
+            if (changed) {
               closeAll();
             }
-          });
-      try {
-        bus->callMethod("GetNameOwner")
-            .onInterface("org.freedesktop.DBus")
-            .withArguments(std::string{kFrontend})
-            .storeResultsTo(frontendOwner);
-      } catch (const sdbus::Error&) {
-      }
+          }) {
       registerInterface();
     }
 
     ~Impl() {
       registration.reset();
-      bus.reset();
       closeAll();
       loop.removeTimer(deferredTimer);
       deferred.clear();
@@ -517,20 +502,9 @@ namespace xdpu {
       }
     }
 
-    std::string caller() const {
-      const auto message = connection.getCurrentlyProcessedMessage();
-      const char* sender = message.getSender();
-      return sender != nullptr ? sender : "";
-    }
+    std::string caller() const { return frontend.caller(); }
 
-    void requireFrontend() const {
-      if (frontendOwner.empty() || caller() != frontendOwner) {
-        throw sdbus::Error{
-            sdbus::Error::Name{"org.freedesktop.portal.Error.NotAllowed"},
-            "Only the desktop portal frontend may control global shortcuts"
-        };
-      }
-    }
+    void requireFrontend() const { frontend.require("global shortcuts"); }
 
     std::shared_ptr<Session> lookup(const sdbus::ObjectPath& path) const {
       requireFrontend();

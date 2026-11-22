@@ -29,7 +29,8 @@ namespace {
   class Client {
   public:
     Client() {
-      m_bus = sdbus::createSessionBusConnection();
+      // The backend only accepts impl calls from the frontend's bus name.
+      m_bus = sdbus::createSessionBusConnection(sdbus::ServiceName{"org.freedesktop.portal.Desktop"});
       m_portal = sdbus::createProxy(
           *m_bus, sdbus::ServiceName{kService}, sdbus::ObjectPath{"/org/freedesktop/portal/desktop"}
       );

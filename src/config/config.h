@@ -27,7 +27,8 @@ namespace xdpu {
     bool operator==(const Config&) const = default;
   };
 
-  Config loadConfig();
+  // Returns onParseError when the file exists but fails to parse, so a half-saved edit keeps the live config.
+  Config loadConfig(const Config& onParseError = {});
 
   class ConfigWatcher {
   public:

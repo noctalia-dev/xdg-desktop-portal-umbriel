@@ -43,7 +43,6 @@ namespace xdpu {
       Impl* owner = nullptr;
       OutputInfo info;
       uint32_t registryName = 0;
-      bool hasName = false;
       uint32_t transform = 0;
       uint32_t pendingTransform = 0;
     };
@@ -76,7 +75,6 @@ namespace xdpu {
     bool preparedRead = false;
     bool wantsWrite = false;
     bool disconnected = false;
-    uint32_t nextSyntheticOutput = 1;
 
     std::vector<CaptureSession*> captures;
     std::vector<OutputInfo> outputs;
@@ -92,7 +90,7 @@ namespace xdpu {
         (void)object;
         OutputInfo info = state->info;
         if (info.name.empty()) {
-          info.name = "output-" + std::to_string(state->registryName == 0 ? nextSyntheticOutput : state->registryName);
+          info.name = "output-" + std::to_string(state->registryName);
         }
         outputs.push_back(std::move(info));
       }
@@ -327,7 +325,6 @@ namespace xdpu {
     size_t mapSize = 0;
     uint32_t format = 0;
     uint32_t stride = 0;
-    bool requestPending = false;
     uint32_t consecutiveFailures = 0;
     bool pendingDamage = true;
     CursorMetadata metadata;
@@ -450,7 +447,6 @@ namespace xdpu {
         return;
       }
       state->info.name = name == nullptr ? std::string{} : name;
-      state->hasName = true;
     }
 
     void onOutputDescription(void* data, wl_output* output, const char* description) {
@@ -573,10 +569,9 @@ namespace xdpu {
         return;
       }
 
-      const auto* begin = static_cast<const uint64_t*>(modifiers->data);
-      const auto* end = reinterpret_cast<const uint64_t*>(static_cast<const char*>(modifiers->data) + modifiers->size);
-      for (const uint64_t* modifier = begin; modifier < end; ++modifier) {
-        capture->pendingConstraints.dmabufFormats.push_back({format, *modifier});
+      const auto* modifierList = static_cast<const uint64_t*>(modifiers->data);
+      for (size_t i = 0; i < modifiers->size / sizeof(uint64_t); ++i) {
+        capture->pendingConstraints.dmabufFormats.push_back({format, modifierList[i]});
       }
     }
 
@@ -827,15 +822,12 @@ namespace xdpu {
 
     void requestCursorFrame(WaylandContext::CursorCapture& cursor, bool damage) {
       if (cursor.imageCapture == nullptr || cursor.imageCapture->stopped || cursor.buffer == nullptr) {
-        cursor.requestPending = true;
         return;
       }
       if (cursor.pendingFrame != nullptr) {
-        cursor.requestPending = true;
         return;
       }
 
-      cursor.requestPending = false;
       cursor.pendingDamage = damage;
       cursor.pendingFrame = cursor.owner.impl.owner.captureFrame(
           *cursor.imageCapture, cursor.buffer, damage,

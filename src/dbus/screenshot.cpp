@@ -93,7 +93,8 @@ namespace xdpu {
     std::optional<std::filesystem::path> runtimeDir() {
       const char* runtime = std::getenv("XDG_RUNTIME_DIR");
       if (runtime == nullptr || *runtime == '\0') {
-        return std::filesystem::path{"/tmp"} / "xdg-desktop-portal-umbriel";
+        std::println(stderr, "screenshot: XDG_RUNTIME_DIR is not set; refusing to write to a shared directory");
+        return std::nullopt;
       }
       return std::filesystem::path{runtime} / "xdg-desktop-portal-umbriel";
     }
@@ -292,9 +293,11 @@ namespace xdpu {
     sdbus::IObject& object;
     Config config;
     WaylandContext& wayland;
+    Frontend frontend;
 
     Impl(Loop& loop, sdbus::IConnection& connection, sdbus::IObject& object, Config config, WaylandContext& wayland)
-        : loop(loop), connection(connection), object(object), config(std::move(config)), wayland(wayland) {
+        : loop(loop), connection(connection), object(object), config(std::move(config)), wayland(wayland),
+          frontend(connection) {
       object
           .addVTable(
               sdbus::registerMethod("Screenshot")
@@ -304,6 +307,7 @@ namespace xdpu {
                                  ) {
                     (void)appId;
                     (void)parentWindow;
+                    frontend.require("screenshots");
                     screenshot(std::move(result), std::string(handle), options);
                   })
                   .withInputParamNames("handle", "app_id", "parent_window", "options")
@@ -316,6 +320,7 @@ namespace xdpu {
                     (void)appId;
                     (void)parentWindow;
                     (void)options;
+                    frontend.require("screenshots");
                     pickColor(std::move(result), std::string(handle));
                   })
                   .withInputParamNames("handle", "app_id", "parent_window", "options")
@@ -375,7 +380,7 @@ namespace xdpu {
 
       void attachRequest(const std::string& handle) {
         std::weak_ptr<Operation> weak = shared_from_this();
-        request = std::make_shared<Request>(portal.connection, handle, [weak] {
+        request = std::make_shared<Request>(portal.connection, portal.frontend, handle, [weak] {
           if (auto op = weak.lock()) {
             op->cancel();
           }
@@ -628,10 +633,10 @@ namespace xdpu {
               }
               if (child.commandNotFound()) {
                 std::println(
-                    stderr, "screenshot: chooser command not found ({}); falling back to first output",
+                    stderr, "screenshot: chooser command not found ({}); cancelling",
                     self->portal.config.screencast.chooserCmd
                 );
-                self->captureFirstOutput();
+                self->finish(1, {});
                 return;
               }
               if (!child.success()) {

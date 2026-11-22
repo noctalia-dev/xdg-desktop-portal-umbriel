@@ -350,6 +350,7 @@ namespace xdpu {
     Config config;
     WaylandContext& wayland;
     PipeWireContext& pipewire;
+    Frontend frontend;
     std::map<std::string, std::shared_ptr<Session>> sessions;
     std::map<std::string, DynamicGrant> dynamicGrants;
     ScreenCastCommand screenCastCommand;
@@ -366,7 +367,7 @@ namespace xdpu {
         PipeWireContext& pipewire
     )
         : loop(loop), connection(connection), object(object), config(std::move(config)), wayland(wayland),
-          pipewire(pipewire) {
+          pipewire(pipewire), frontend(connection) {
       object
           .addVTable(
               sdbus::registerMethod("CreateSession")
@@ -376,6 +377,7 @@ namespace xdpu {
                                      const PortalResults& options
                                  ) {
                     (void)options;
+                    frontend.require("screen casts");
                     createSession(std::move(result), std::string(handle), std::string(sessionHandle), appId);
                   })
                   .withInputParamNames("handle", "session_handle", "app_id", "options")
@@ -387,6 +389,7 @@ namespace xdpu {
                                      const PortalResults& options
                                  ) {
                     (void)appId;
+                    frontend.require("screen casts");
                     selectSources(std::move(result), std::string(handle), std::string(sessionHandle), options);
                   })
                   .withInputParamNames("handle", "session_handle", "app_id", "options")
@@ -400,6 +403,7 @@ namespace xdpu {
                     (void)appId;
                     (void)parentWindow;
                     (void)options;
+                    frontend.require("screen casts");
                     start(std::move(result), std::string(handle), std::string(sessionHandle));
                   })
                   .withInputParamNames("handle", "session_handle", "app_id", "parent_window", "options")
@@ -423,9 +427,16 @@ namespace xdpu {
       }
     }
 
+    // Only erase the closed session itself; a replacement may already own the same path.
     void deferEraseSession(const std::string& path) {
-      loop.addTimer(0, [this, path] {
-        sessions.erase(path);
+      const auto found = sessions.find(path);
+      if (found == sessions.end()) {
+        return;
+      }
+      loop.addTimer(0, [this, path, session = std::weak_ptr<Session>(found->second)] {
+        if (const auto current = sessions.find(path); current != sessions.end() && current->second == session.lock()) {
+          sessions.erase(current);
+        }
         reportActive();
       });
     }
@@ -433,14 +444,14 @@ namespace xdpu {
     void createSession(
         PortalResponse&& result, const std::string& handle, const std::string& sessionPath, const std::string& appId
     ) {
-      auto request = std::make_shared<Request>(connection, handle, [] {});
+      auto request = std::make_shared<Request>(connection, frontend, handle, [] {});
       if (auto existing = sessions.find(sessionPath); existing != sessions.end()) {
         existing->second->close();
         sessions.erase(existing);
         reportActive();
       }
 
-      sessions.emplace(sessionPath, std::make_shared<Session>(connection, sessionPath, appId, [this, sessionPath] {
+      sessions.emplace(sessionPath, std::make_shared<Session>(connection, frontend, sessionPath, appId, [this, sessionPath] {
                          deferEraseSession(sessionPath);
                        }));
       result.returnResults(uint32_t{0}, PortalResults{});
@@ -450,7 +461,7 @@ namespace xdpu {
     void selectSources(
         PortalResponse&& result, const std::string& handle, const std::string& sessionPath, const PortalResults& options
     ) {
-      auto request = std::make_shared<Request>(connection, handle, [] {});
+      auto request = std::make_shared<Request>(connection, frontend, handle, [] {});
       const auto sessionIt = sessions.find(sessionPath);
       if (sessionIt == sessions.end() || sessionIt->second->closed()) {
         result.returnResults(uint32_t{2}, PortalResults{});
@@ -531,7 +542,7 @@ namespace xdpu {
 
       void attachRequest(const std::string& handle) {
         std::weak_ptr<StartOperation> weak = shared_from_this();
-        request = std::make_shared<Request>(portal.connection, handle, [weak] {
+        request = std::make_shared<Request>(portal.connection, portal.frontend, handle, [weak] {
           if (auto op = weak.lock()) {
             op->cancel();
           }
@@ -598,10 +609,10 @@ namespace xdpu {
               }
               if (child.commandNotFound()) {
                 std::println(
-                    stderr, "screencast: chooser command not found ({}); falling back to first output",
+                    stderr, "screencast: chooser command not found ({}); cancelling",
                     self->portal.config.screencast.chooserCmd
                 );
-                self->fallbackFirstOutput();
+                self->finish(1, {});
                 return;
               }
               if (!child.success()) {
@@ -622,15 +633,6 @@ namespace xdpu {
               self->startCaptures(std::move(request));
             }
         );
-      }
-
-      void fallbackFirstOutput() {
-        const auto& outputs = portal.wayland.outputs();
-        if (outputs.empty()) {
-          finish(2, {});
-          return;
-        }
-        startCaptures({{selectionForOutput(outputs.front())}});
       }
 
       // Fixed unless the user opted this lone source into target-changing actions; only those shares follow and
@@ -1014,7 +1016,7 @@ namespace xdpu {
     void start(PortalResponse&& result, const std::string& handle, const std::string& sessionPath) {
       const auto sessionIt = sessions.find(sessionPath);
       if (sessionIt == sessions.end() || sessionIt->second->closed()) {
-        auto request = std::make_shared<Request>(connection, handle, [] {});
+        auto request = std::make_shared<Request>(connection, frontend, handle, [] {});
         result.returnResults(uint32_t{2}, PortalResults{});
         loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
         return;

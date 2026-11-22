@@ -71,7 +71,10 @@ namespace xdpu {
 
     using ClosedHandler = std::function<void()>;
 
-    Session(sdbus::IConnection& connection, std::string path, std::string appId, ClosedHandler closedHandler);
+    Session(
+        sdbus::IConnection& connection, const Frontend& frontend, std::string path, std::string appId,
+        ClosedHandler closedHandler
+    );
     ~Session();
 
     Session(const Session&) = delete;

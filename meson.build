@@ -163,13 +163,15 @@ if get_option('tests')
     files(
       'tests/global_shortcuts_portal.cpp',
       'src/dbus/global_shortcuts.cpp',
+      'src/dbus/request.cpp',
+      'src/dbus/screenshot.cpp',
       'src/dbus/global_shortcuts_credentials.cpp',
       'src/wayland/global_shortcuts.cpp',
       'src/wayland/wayland.cpp',
       'src/loop/loop.cpp',
-    ) + protocol_sources + [global_shortcuts_server_h],
+    ) + protocol_sources + [global_shortcuts_server_h, defaults_h],
     include_directories: [include_directories('src'), include_directories('.')],
-    dependencies: [sdbus_dep, wayland_client_dep, dependency('wayland-server'), libdrm_dep, nlohmann_json_dep],
+    dependencies: [sdbus_dep, wayland_client_dep, dependency('wayland-server'), libdrm_dep, nlohmann_json_dep, cairo_dep],
     link_args: ['-Wl,--wrap=renameat'],
   )
   dbus_session_config = meson.project_source_root() / 'tests/dbus-session.conf'
