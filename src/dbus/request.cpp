@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <print>
 #include <sys/epoll.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
@@ -132,7 +133,12 @@ namespace xdpu {
         ::dup2(stdinPipe[0], STDIN_FILENO);
         ::dup2(stdoutPipe[1], STDOUT_FILENO);
         // Do not leak the portal's D-Bus, Wayland, or PipeWire fds into the chooser.
+        // musl has no close_range() wrapper; use the raw syscall there.
+#ifdef __GLIBC__
         ::close_range(3, ~0U, 0);
+#else
+        ::syscall(SYS_close_range, 3, ~0U, 0);
+#endif
         ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
         _exit(127);
       }
