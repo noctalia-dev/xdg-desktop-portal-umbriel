@@ -528,7 +528,7 @@ namespace {
     fixture.otherProxy->callMethodAsync("Screenshot")
         .onInterface("org.freedesktop.impl.portal.Screenshot")
         .withArguments(sdbus::ObjectPath{fixture.handle()}, std::string{"org.test.App"}, std::string{}, Dict{})
-        .uponReplyInvoke([reply](std::optional<sdbus::Error> error, uint32_t, Dict) {
+        .uponReplyInvoke([reply](std::optional<sdbus::Error> error, uint32_t, const Dict&) {
           reply->error = error ? std::string(error->getName()) : std::string{};
           reply->done = true;
         });
