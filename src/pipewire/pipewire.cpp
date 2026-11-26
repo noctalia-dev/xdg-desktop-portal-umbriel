@@ -706,10 +706,15 @@ namespace xdpu {
       if (state == PW_STREAM_STATE_ERROR) {
         std::println(stderr, "pipewire: stream error: {}", error == nullptr ? "unknown" : error);
       }
+      const auto stateChanged = stream->onStateChanged;
+      const auto processRequest = stream->onProcessRequest;
+      if (stateChanged) {
+        stateChanged();
+      }
       // A driver stream must submit its first buffer itself. Triggering the graph
       // here is not sufficient because there is no queued buffer to schedule yet.
-      if (state == PW_STREAM_STATE_STREAMING && stream->onProcessRequest) {
-        stream->onProcessRequest();
+      if (state == PW_STREAM_STATE_STREAMING && processRequest) {
+        processRequest();
       }
     }
 
@@ -847,17 +852,6 @@ namespace xdpu {
   PipeWireContext::~PipeWireContext() = default;
 
   pw_loop* PipeWireContext::pwLoop() const { return m_impl->pwLoop; }
-
-  void PipeWireContext::processPending() {
-    if (m_impl->pwLoop == nullptr) {
-      return;
-    }
-    // Iterate with a brief timeout to let the PipeWire daemon assign node IDs.
-    // A zero-timeout iterate may not be enough if the daemon hasn't responded yet.
-    for (int i = 0; i < 5; ++i) {
-      pw_loop_iterate(m_impl->pwLoop, 10); // 10ms per iteration, up to 50ms total
-    }
-  }
 
   std::unique_ptr<PipeWireStream> PipeWireContext::createStream(
       uint32_t width, uint32_t height, const CaptureConstraints& constraints, uint32_t maxFps, bool cursorMetadata
@@ -1130,6 +1124,14 @@ namespace xdpu {
     const pw_stream_state state = pw_stream_get_state(m_impl->stream, &error);
     (void)error;
     return state == PW_STREAM_STATE_PAUSED || state == PW_STREAM_STATE_STREAMING;
+  }
+
+  bool PipeWireStream::failed() const {
+    if (m_impl->stream == nullptr || m_impl->core == nullptr || m_impl->core->lost) {
+      return true;
+    }
+    const pw_stream_state state = pw_stream_get_state(m_impl->stream, nullptr);
+    return state == PW_STREAM_STATE_ERROR || state == PW_STREAM_STATE_UNCONNECTED;
   }
 
   bool PipeWireStream::streaming() const {

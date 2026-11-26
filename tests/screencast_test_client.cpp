@@ -7,7 +7,9 @@
 #include <fcntl.h>
 #include <map>
 #include <memory>
+#include <optional>
 #include <pipewire/pipewire.h>
+#include <poll.h>
 #include <print>
 #include <sdbus-c++/sdbus-c++.h>
 #include <spa/buffer/meta.h>
@@ -17,7 +19,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -28,7 +32,7 @@ namespace {
 
   class Client {
   public:
-    Client() {
+    explicit Client(bool startOnly) {
       // The backend only accepts impl calls from the frontend's bus name.
       m_bus = sdbus::createSessionBusConnection(sdbus::ServiceName{"org.freedesktop.portal.Desktop"});
       m_portal = sdbus::createProxy(
@@ -54,17 +58,26 @@ namespace {
           )
           .storeResultsTo(response, results);
       require(response == 0, "SelectSources failed");
-      m_portal->callMethod("Start")
-          .onInterface(kInterface)
-          .withArguments(
-              sdbus::ObjectPath{request + "start"}, m_session, std::string("org.umbriel.TransformTest"), std::string{},
-              Dict{}
-          )
-          .storeResultsTo(response, results);
+      if (startOnly) {
+        probeStart(request + "start", response, results);
+      } else {
+        m_portal->callMethod("Start")
+            .onInterface(kInterface)
+            .withArguments(
+                sdbus::ObjectPath{request + "start"}, m_session, std::string("org.umbriel.TransformTest"),
+                std::string{}, Dict{}
+            )
+            .storeResultsTo(response, results);
+      }
       require(response == 0 && results.contains("streams"), "Start failed");
       const auto streams = results.at("streams").get<std::vector<Stream>>();
       require(streams.size() == 1, "expected one portal stream");
       m_sourceNode = streams.front().get<0>();
+      require(m_sourceNode != 0 && m_sourceNode != PW_ID_ANY, "Start returned an invalid PipeWire node");
+      if (startOnly) {
+        std::println("ready node={}", m_sourceNode);
+        return;
+      }
 
       pw_init(nullptr, nullptr);
       m_loop = pw_main_loop_new(nullptr);
@@ -129,15 +142,83 @@ namespace {
         }
       } catch (const std::exception&) {
       }
-      pw_deinit();
+      if (m_loop) {
+        pw_deinit();
+      }
     }
 
     int run() {
-      pw_main_loop_run(m_loop);
+      if (m_loop) {
+        pw_main_loop_run(m_loop);
+      }
       return m_failed ? 1 : 0;
     }
 
   private:
+    void probeStart(const std::string& request, uint32_t& response, Dict& results) {
+      bool replied = false;
+      std::optional<sdbus::Error> failure;
+      const auto pending =
+          m_portal->callMethodAsync("Start")
+              .onInterface(kInterface)
+              .withArguments(
+                  sdbus::ObjectPath{request}, m_session, std::string("org.umbriel.TransformTest"), std::string{}, Dict{}
+              )
+              .uponReplyInvoke(
+                  [&](std::optional<sdbus::Error> error, uint32_t status, const Dict& values) {
+                    failure = std::move(error);
+                    response = status;
+                    results = values;
+                    replied = true;
+                  },
+                  sdbus::return_slot
+              );
+      std::println("starting");
+      int inputFd = STDIN_FILENO;
+      std::string input;
+      while (!replied) {
+        while (m_bus->processPendingEvent()) {
+        }
+        if (replied) {
+          break;
+        }
+        const auto data = m_bus->getEventLoopPollData();
+        std::array<pollfd, 2> fds{{{data.fd, static_cast<short>(data.events), 0}, {inputFd, POLLIN, 0}}};
+        const int ready = poll(fds.data(), fds.size(), data.getPollTimeout());
+        if (ready < 0 && errno == EINTR) {
+          continue;
+        }
+        require(ready >= 0, "cannot poll pending Start");
+        if ((fds[1].revents & (POLLIN | POLLHUP)) == 0) {
+          continue;
+        }
+        std::array<char, 128> bytes{};
+        const auto count = read(inputFd, bytes.data(), bytes.size());
+        require(count >= 0, "cannot read Start command");
+        if (count == 0) {
+          inputFd = -1;
+          continue;
+        }
+        input.append(bytes.data(), static_cast<size_t>(count));
+        size_t end = 0;
+        while ((end = input.find('\n')) != std::string::npos) {
+          const std::string command = input.substr(0, end);
+          input.erase(0, end + 1);
+          const bool cancel = command == "cancel";
+          require(cancel || command == "close-session", "unknown Start command");
+          auto target =
+              sdbus::createProxy(*m_bus, sdbus::ServiceName{kService}, cancel ? sdbus::ObjectPath{request} : m_session);
+          target->callMethod("Close").onInterface(
+              cancel ? "org.freedesktop.impl.portal.Request" : "org.freedesktop.impl.portal.Session"
+          );
+        }
+      }
+      if (failure) {
+        throw *failure;
+      }
+      std::println("start response={}", response);
+    }
+
     static void require(bool condition, const char* message) {
       if (!condition) {
         throw std::runtime_error(message);
@@ -288,10 +369,14 @@ namespace {
   };
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   try {
-    Client client;
+    const bool startOnly = argc == 2 && std::string_view(argv[1]) == "--start-only";
+    if (argc != 1 && !startOnly) {
+      throw std::runtime_error("usage: screencast-test-client [--start-only]");
+    }
+    Client client(startOnly);
     return client.run();
   } catch (const std::exception& error) {
     std::println(stderr, "screencast-test-client: {}", error.what());

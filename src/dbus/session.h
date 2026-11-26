@@ -106,6 +106,8 @@ namespace xdpu {
         CaptureCursorMode cursorMode, uint32_t maxFps, DynamicMode dynamicMode, ClosedHandler backendClosedHandler
     );
     std::vector<StreamResult> streamResults() const;
+    bool streamsReady() const;
+    bool streamsFailed() const;
     void setDynamicTarget(const std::optional<Selection>& target);
     void setDynamicMode(DynamicMode mode);
     void setFollowTarget(DynamicMode mode, const std::optional<Selection>& target);

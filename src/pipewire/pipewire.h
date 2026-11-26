@@ -28,8 +28,6 @@ namespace xdpu {
         uint32_t width, uint32_t height, const CaptureConstraints& constraints, uint32_t maxFps, bool cursorMetadata
     );
     bool supportsCursorMetadata() const;
-    // Process any pending PipeWire events (e.g. to resolve node IDs after stream connect).
-    void processPending();
 
   private:
     struct Impl;
@@ -55,6 +53,7 @@ namespace xdpu {
     bool setActive(bool active);
     void disconnect();
     bool connected() const;
+    bool failed() const;
     // Unlike connected(), false while PAUSED (no user pulling frames).
     bool streaming() const;
     void triggerProcess();
@@ -66,6 +65,7 @@ namespace xdpu {
     Impl* implForCallbacks() const;
 
     std::function<void()> onProcessRequest;
+    std::function<void()> onStateChanged;
     std::function<void(struct pw_buffer*)> onAddBuffer;
     std::function<void(struct pw_buffer*)> onRemoveBuffer;
 

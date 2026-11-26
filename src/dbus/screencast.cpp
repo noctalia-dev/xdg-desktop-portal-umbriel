@@ -433,6 +433,12 @@ namespace xdpu {
       if (found == sessions.end()) {
         return;
       }
+      const auto operations = inflight;
+      for (const auto& operation : operations) {
+        if (operation->session == found->second) {
+          operation->cancel();
+        }
+      }
       loop.addTimer(0, [this, path, session = std::weak_ptr<Session>(found->second)] {
         if (const auto current = sessions.find(path); current != sessions.end() && current->second == session.lock()) {
           sessions.erase(current);
@@ -497,6 +503,7 @@ namespace xdpu {
       std::shared_ptr<Session> session;
       std::vector<PendingCapture> pending;
       int timeoutTimer = 0;
+      int readinessTimer = 0;
       bool done = false;
       std::optional<Session::DynamicMode> waitingMode;
       std::optional<Session::DynamicMode> requestedDynamicMode;
@@ -562,6 +569,11 @@ namespace xdpu {
           return;
         }
         done = true;
+        if (readinessTimer != 0) {
+          const int timer = readinessTimer;
+          readinessTimer = 0;
+          portal.loop.removeTimer(timer);
+        }
         if (timeoutTimer != 0) {
           const int timer = timeoutTimer;
           timeoutTimer = 0;
@@ -740,9 +752,13 @@ namespace xdpu {
             return;
           }
           self->timeoutTimer = 0;
-          std::println(stderr, "screencast: timed out waiting for capture constraints");
+          std::println(stderr, "screencast: timed out waiting for capture setup");
           self->finish(2, {});
         });
+        if (timeoutTimer == 0) {
+          finish(2, {});
+          return;
+        }
         maybeCompleteCaptures();
       }
 
@@ -799,12 +815,6 @@ namespace xdpu {
           }
         }
 
-        if (timeoutTimer != 0) {
-          const int timer = timeoutTimer;
-          timeoutTimer = 0;
-          portal.loop.removeTimer(timer);
-        }
-
         for (PendingCapture& item : pending) {
           const uint32_t width = item.constraints.bufferWidth;
           const uint32_t height = item.constraints.bufferHeight;
@@ -823,6 +833,12 @@ namespace xdpu {
             finish(2, {});
             return;
           }
+          std::weak_ptr<StartOperation> weak = shared_from_this();
+          stream->onStateChanged = [weak] {
+            if (auto operation = weak.lock()) {
+              operation->scheduleReadinessCheck();
+            }
+          };
 
           // Clear constraintsCb before transfer to break the reference cycle
           // (callback may hold a weak_ptr whose closure captured other state).
@@ -846,8 +862,35 @@ namespace xdpu {
           }
         }
 
-        // Process pending PipeWire events so stream node IDs are resolved.
-        portal.pipewire.processPending();
+        pending.clear();
+        completeStreams();
+      }
+
+      void scheduleReadinessCheck() {
+        if (done || readinessTimer != 0) {
+          return;
+        }
+        // Stream destruction must happen after the PipeWire state callback returns.
+        std::weak_ptr<StartOperation> weak = shared_from_this();
+        readinessTimer = portal.loop.addTimer(0, [weak] {
+          if (auto operation = weak.lock()) {
+            operation->readinessTimer = 0;
+            operation->completeStreams();
+          }
+        });
+      }
+
+      void completeStreams() {
+        if (done) {
+          return;
+        }
+        if (session->streamsFailed()) {
+          finish(2, {});
+          return;
+        }
+        if (!session->streamsReady()) {
+          return;
+        }
         portal.reportActive();
         finish(0, buildResults());
       }

@@ -14,6 +14,7 @@ PIDS=()
 SUCCESS=0
 cleanup() {
   local pid
+  if [[ -n ${PIPEWIRE_PID:-} ]]; then kill -CONT "$PIPEWIRE_PID" 2>/dev/null || true; fi
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
   for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
   if ((SUCCESS)) && [[ ${UMBRIEL_SCREENCAST_KEEP_LOGS:-0} != 1 ]]; then
@@ -191,8 +192,9 @@ share() {
     if pw-link -i | grep -q 'umbriel-screencast-test:input_1'; then break; fi
     sleep 0.025
   done
-  pw-link 'umbriel-screen-capture:capture_1' 'umbriel-screencast-test:input_1'
   printf 'expect %s 640 360 ff0000 ff0000 ff0000 ff0000\n' "$name" >&"$fd"
+  wait_log "$log" "expecting label=$name "
+  pw-link 'umbriel-screen-capture:capture_1' 'umbriel-screencast-test:input_1'
   wait_log "$log" "matched label=$name node=$node "
 }
 # Closes a share whose PipeWire daemon has since been replaced.
@@ -210,13 +212,99 @@ close_old_share() {
 start_pipewire
 share first
 restart_pipewire
-share second
 close_old_share first
+share second
 restart_pipewire
-share third
 close_old_share second
+share third
 printf 'quit\n' >&"${SHARE_FD[third]}"
 wait "${SHARE_PID[third]}"
 require_portal
+
+start_probe() {
+  local name=$1 fd
+  mkfifo "$RUNTIME/$name.fifo"
+  exec {fd}<>"$RUNTIME/$name.fifo"
+  SHARE_FD[$name]=$fd
+  "$CLIENT" --start-only <&"$fd" >"$RUNTIME/client-$name.log" 2>&1 &
+  SHARE_PID[$name]=$!
+  PIDS+=("$!")
+  wait_log "$RUNTIME/client-$name.log" starting
+}
+expect_pending() {
+  local name=$1
+  sleep 0.15 # real time: keep registration stalled longer than the former synchronous event pump.
+  if grep -q '^start response=' "$RUNTIME/client-$name.log"; then
+    echo "Share $name completed before PipeWire registered its node"
+    cat "$RUNTIME/client-$name.log"
+    exit 1
+  fi
+  dbus-send --session --print-reply --reply-timeout=1000 \
+    --dest=org.freedesktop.impl.portal.desktop.umbriel /org/freedesktop/portal/desktop \
+    org.freedesktop.DBus.Peer.Ping >/dev/null
+}
+expect_probe() {
+  local name=$1 response=$2 status=0
+  wait_log "$RUNTIME/client-$name.log" "start response=$response"
+  wait "${SHARE_PID[$name]}" || status=$?
+  grep -q "^start response=$response$" "$RUNTIME/client-$name.log" || {
+    cat "$RUNTIME/client-$name.log"
+    exit 1
+  }
+  if ((response == 0)); then
+    ((status == 0))
+  else
+    ((status == 1))
+  fi
+  require_portal
+}
+expect_no_capture() {
+  for _ in $(seq 200); do
+    if ! pw-link -o | grep -q 'umbriel-screen-capture:'; then return 0; fi
+    sleep 0.025
+  done
+  echo 'A completed Start left a capture stream behind'
+  pw-link -o
+  exit 1
+}
+
+# Registration can finish later without blocking the portal's D-Bus event loop.
+kill -STOP "$PIPEWIRE_PID"
+start_probe delayed
+expect_pending delayed
+kill -CONT "$PIPEWIRE_PID"
+expect_probe delayed 0
+expect_no_capture
+
+# Request and session closure both cancel a Start awaiting node registration.
+for command in cancel close-session; do
+  kill -STOP "$PIPEWIRE_PID"
+  start_probe "$command"
+  expect_pending "$command"
+  printf '%s\n' "$command" >&"${SHARE_FD[$command]}"
+  expect_probe "$command" 1
+  kill -CONT "$PIPEWIRE_PID"
+  expect_no_capture
+done
+
+# A daemon that never answers must produce a failure, not an invalid stream ID.
+kill -STOP "$PIPEWIRE_PID"
+start_probe timeout
+expect_pending timeout
+expect_probe timeout 2
+kill -CONT "$PIPEWIRE_PID"
+expect_no_capture
+
+# Losing the daemon during registration must also fail and allow the next share.
+kill -STOP "$PIPEWIRE_PID"
+start_probe disconnected
+expect_pending disconnected
+kill -KILL "$PIPEWIRE_PID"
+wait "$PIPEWIRE_PID" || true
+expect_probe disconnected 2
+start_pipewire
+share recovered
+printf 'quit\n' >&"${SHARE_FD[recovered]}"
+wait "${SHARE_PID[recovered]}"
 SUCCESS=1
-echo 'ScreenCast recovered from a late PipeWire start and two restarts, and closed old shares cleanly'
+echo 'ScreenCast waited for registered nodes, handled cancellation and timeouts, and recovered from PipeWire restarts'

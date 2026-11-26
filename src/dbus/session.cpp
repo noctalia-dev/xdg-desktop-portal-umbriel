@@ -96,6 +96,7 @@ namespace xdpu {
         cancelFrame();
         if (stream) {
           stream->onProcessRequest = nullptr;
+          stream->onStateChanged = nullptr;
           stream->onAddBuffer = nullptr;
           stream->onRemoveBuffer = nullptr;
           stream->disconnect();
@@ -548,6 +549,18 @@ namespace xdpu {
       }
     }
     return results;
+  }
+
+  bool Session::streamsReady() const {
+    return !m_impl->streams.empty() && std::ranges::all_of(m_impl->streams, [](const auto& state) {
+      return !state->stopped && state->stream && state->stream->connected() && state->stream->nodeId() != 0;
+    });
+  }
+
+  bool Session::streamsFailed() const {
+    return closed() || std::ranges::any_of(m_impl->streams, [](const auto& state) {
+             return state->stopped || !state->stream || state->stream->failed();
+           });
   }
 
   void Session::setDynamicTarget(const std::optional<Selection>& target) {
