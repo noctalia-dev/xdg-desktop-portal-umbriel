@@ -21,9 +21,8 @@ namespace xdpu {
       );
       m_bus->uponSignal("NameOwnerChanged")
           .onInterface("org.freedesktop.DBus")
-          .call([this, handler = std::move(handler)](
-                    const std::string& name, const std::string&, const std::string& owner
-                ) {
+          .call([this,
+                 handler = std::move(handler)](const std::string& name, const std::string&, const std::string& owner) {
             const bool changed = name == kName && owner != m_owner;
             if (changed) {
               m_owner = owner;

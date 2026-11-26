@@ -1,5 +1,5 @@
-#include "dbus/global_shortcuts.h"
 #include "config/config.h"
+#include "dbus/global_shortcuts.h"
 #include "dbus/request.h"
 #include "dbus/screenshot.h"
 #include "global_shortcuts_fixture.h"

@@ -58,17 +58,19 @@ namespace xdpu {
     }
   };
 
-  Request::Request(sdbus::IConnection& connection, const Frontend& frontend, std::string path, CloseHandler closeHandler)
+  Request::Request(
+      sdbus::IConnection& connection, const Frontend& frontend, std::string path, CloseHandler closeHandler
+  )
       : m_impl(std::make_unique<Impl>()) {
     m_impl->path = std::move(path);
     m_impl->closeHandler = std::move(closeHandler);
     m_impl->object = sdbus::createObject(connection, sdbus::ObjectPath{m_impl->path});
-    m_impl->object->addVTable(
-                      sdbus::registerMethod("Close").implementedAs([this, &frontend] {
-                        frontend.require("portal requests");
-                        m_impl->close();
-                      })
-    ).forInterface(kRequestInterface);
+    m_impl->object
+        ->addVTable(sdbus::registerMethod("Close").implementedAs([this, &frontend] {
+          frontend.require("portal requests");
+          m_impl->close();
+        }))
+        .forInterface(kRequestInterface);
   }
 
   Request::~Request() = default;

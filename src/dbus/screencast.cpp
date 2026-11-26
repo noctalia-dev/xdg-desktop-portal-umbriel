@@ -457,9 +457,11 @@ namespace xdpu {
         reportActive();
       }
 
-      sessions.emplace(sessionPath, std::make_shared<Session>(connection, frontend, sessionPath, appId, [this, sessionPath] {
-                         deferEraseSession(sessionPath);
-                       }));
+      sessions.emplace(
+          sessionPath, std::make_shared<Session>(connection, frontend, sessionPath, appId, [this, sessionPath] {
+            deferEraseSession(sessionPath);
+          })
+      );
       result.returnResults(uint32_t{0}, PortalResults{});
       loop.addTimer(0, [request = std::move(request)] mutable { request.reset(); });
     }

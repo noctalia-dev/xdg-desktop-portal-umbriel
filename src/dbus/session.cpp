@@ -454,9 +454,9 @@ namespace xdpu {
       sdbus::IConnection& connection, const Frontend& frontend, std::string path, std::string appId,
       ClosedHandler closedHandler
   )
-      : m_impl(std::make_unique<Impl>(
-            connection, frontend, std::move(path), std::move(appId), std::move(closedHandler)
-        )) {}
+      : m_impl(
+            std::make_unique<Impl>(connection, frontend, std::move(path), std::move(appId), std::move(closedHandler))
+        ) {}
 
   Session::~Session() = default;
 
